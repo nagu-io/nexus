@@ -1,39 +1,52 @@
 # Hacker News Draft
 
-Show HN: NEXUS - open-source private AI developer OS with compression, routing, hallucination checks, and RAG protection
+Show HN: NEXUS - local-first AI developer OS with trust gating and RAG protection
 
-I built NEXUS as a local-first AI developer OS that combines several smaller projects I had already been working on into one product.
+I built NEXUS as a CS student from India. It is a private AI developer OS that runs locally, routes tasks across local and cloud paths, scores answers before serving them, and adds canary-based RAG protection.
 
-What it does:
+The main idea is that most local AI tools can generate answers, but very few try to decide whether an answer should be shown at all.
 
-- compresses local models through a CompressX adapter
-- routes work across local models, cloud models, and specialist agents
-- scores every response with ReflectScore before serving it
-- blocks or warns on suspicious answers
-- seeds canaries into RAG sources and checks for leaks
-- ships with a CLI, API, and React dashboard
+NEXUS has a trust layer called ReflectScore that sits between the model output and the user:
 
-The project is open source and runs on your machine. The app is built in Python with a React dashboard, and the repo is kept focused on the shipped NEXUS product rather than a pile of separate experiments.
+- low-risk answers are served
+- medium-risk answers are shown with a warning
+- high-risk answers are blocked and can be rerouted to a stronger model
 
-What I think is interesting is the trust layer. A lot of local AI tooling can generate answers, but much less of it tries to decide whether an answer should be shown at all. ReflectScore is the layer in NEXUS that serves, warns, or blocks before the response reaches the user.
+Current shipped pieces:
 
-Current state:
+- `CompressX` for compression
+- `AEON` for routing
+- `ReflectScore` for hallucination scoring and response gating
+- `CanaryRAG` and `CanaryVaults` for canary seeding and leak monitoring
+- CLI, FastAPI backend, and React dashboard
+
+The launch path is intentionally narrow right now:
+
+- Ollama
+- `phi3:mini`
+- `nexus doctor` for setup checks
+
+What already works:
 
 - install works
 - CLI works
-- FastAPI endpoints work
+- API works
 - dashboard builds
-- runtime setup is checked with `nexus doctor`
-- local fallback modes are in place when optional services are missing
+- tests and CI are in place
+- local fallback modes exist when optional services are missing
 
-I would love feedback on:
+What is still honest about the current state:
 
-- the trust-gating approach
-- how useful the compression plus benchmark story is
-- whether the canary/RAG protection layer feels valuable in practice
+- `nexus init` currently reports a serving-model proxy benchmark, not direct compressed-artifact execution
+- `nexus protect --seed` has a local fallback
+- `nexus protect --check` is still mostly a hosted-service path unless CanaryVaults is configured
 
-Repo structure:
+Repo:
 
-- `nexus/` is the shipped product
-- `dashboard/` is the frontend
-- `docs/` contains launch and project docs
+https://github.com/nagu-io/nexus
+
+Would love feedback on:
+
+- whether the trust-gating model is useful
+- whether the local-first + hosted-upgrade path is compelling
+- whether the canary/RAG protection story feels valuable in practice

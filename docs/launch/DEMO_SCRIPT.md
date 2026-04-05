@@ -2,81 +2,85 @@
 
 ## Goal
 
-Show that NEXUS installs, checks its environment, routes tasks, scores trust, and protects RAG sources.
+Record a 60-second demo that shows:
 
-## Terminal Demo Flow
+- NEXUS runs locally
+- `nexus doctor` explains setup clearly
+- routing + ReflectScore are visible
+- canary protection has a useful fallback story
 
-### 1. Show the repo
+## Recording Plan
 
-```bash
-dir
+### 0-5 seconds: face intro
+
+Say:
+
+"I am a CS student from India, and I built NEXUS, a private AI developer OS that runs locally on your machine."
+
+### 5-10 seconds: show the repo
+
+```powershell
+Get-ChildItem
 ```
 
-Point out:
+Say:
 
-- `nexus/` is the product runtime
-- `dashboard/` is the UI
-- the repo is intentionally kept to just the shipped NEXUS app and docs
+"This repo is just the shipped product: runtime, dashboard, docs, and tests."
 
-### 2. Verify setup
+### 10-20 seconds: show setup check
 
-```bash
+```powershell
 nexus doctor
 ```
 
 Say:
 
-"NEXUS tells you exactly what is missing before you hit runtime errors."
+"NEXUS checks Ollama, the default launch model, and optional services before runtime."
 
-### 3. Show system status
+### 20-30 seconds: show the launch path
 
-```bash
-nexus status
+```powershell
+nexus init
 ```
 
-Call out the active model and ReflectScore thresholds.
+If Ollama is not ready, keep the output in frame.
 
-### 4. Run a routed task
+Say:
 
-```bash
+"The launch path is intentionally opinionated: Ollama plus phi3:mini."
+
+### 30-42 seconds: show a routed coding task
+
+```powershell
 nexus code "build a Python CLI that validates JWT expiration timestamps"
 ```
 
 Say:
 
-"This goes through AEON routing first, then ReflectScore scores the answer before it is served."
+"AEON routes the task, then ReflectScore decides whether to serve, warn, or block the answer."
 
-### 5. Run the benchmark layer
+### 42-52 seconds: show canary protection
 
-```bash
-nexus reflect
-```
-
-Say:
-
-"ReflectScore is both the benchmark system and the live trust gate."
-
-### 6. Show canary protection
-
-```bash
+```powershell
 nexus protect --seed https://example.com/internal-docs
 ```
 
 Say:
 
-"If the remote service is unavailable, NEXUS still falls back to a local canary plan."
+"If CanaryVaults is not configured, NEXUS still builds a local canary plan instead of failing."
 
-### 7. Launch the dashboard
+### 52-60 seconds: close
 
-```bash
+Say:
+
+"NEXUS is open source, runs locally, and is free forever at the core. If you want real-time RAG leak monitoring, that upgrade is CanaryVaults."
+
+## Backup Commands
+
+Use these if you want a longer version after the 60-second cut:
+
+```powershell
+nexus status
+nexus reflect
 nexus chat --dashboard
 ```
-
-Open:
-
-- `http://localhost:8000`
-- `http://localhost:3000`
-
-### 8. Close with the pitch
-
-"NEXUS is a private AI developer OS that compresses models, routes tasks intelligently, detects hallucinations before they reach you, and protects your RAG from leaks."
