@@ -19,6 +19,11 @@ Core pieces:
 
 Yes, if you can run Ollama locally.
 
+NEXUS is currently optimized for one first-class launch path:
+
+- Ollama
+- `phi3:mini`
+
 Minimum path:
 
 - Python 3.11+
@@ -41,6 +46,7 @@ nexus doctor
 Copy-paste these after install:
 
 ```bash
+nexus init
 nexus chat
 nexus code "build a FastAPI auth service"
 nexus reflect
@@ -58,7 +64,7 @@ NEXUS core is free forever for local use.
 
 If you run Ollama on your machine, NEXUS can already do useful work without any paid account:
 
-- `nexus init` to prepare and benchmark a local model
+- `nexus init` to prepare compression artifacts and run a serving-model benchmark
 - `nexus chat` for local-first chat
 - `nexus code "task"` for local coding help
 - `nexus reflect` with heuristic trust scoring
@@ -161,7 +167,7 @@ nexus chat
 ```bash
 nexus doctor
 nexus status
-nexus init --model mistralai/Mistral-7B-Instruct-v0.2 --bits 4
+nexus init
 nexus code "build a FastAPI auth service"
 nexus chat
 nexus chat --dashboard
@@ -205,6 +211,8 @@ NEXUS is designed to degrade gracefully when optional services are missing.
 - Anthropic API key: optional, enables stronger cloud reroute fallback
 - Supabase: optional, enables persistent memory
 - CanaryVaults API key: optional, enables real remote leak monitoring
+
+Without a CanaryVaults key, `nexus protect --check` stays in fallback/guidance mode and `nexus protect --seed` uses a local seed plan.
 
 Run `nexus doctor` any time to see what is configured and exactly what to fix.
 

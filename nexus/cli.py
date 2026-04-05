@@ -40,51 +40,61 @@ def _print_command_error(command_name: str, error: Exception, hint: str | None =
     console.print(Panel(body, title="[bold red]NEXUS Error[/bold red]", style="red"))
 
 
-def _runtime_checks() -> list[dict]:
-    """Collect runtime dependency checks for status and doctor commands."""
-    import importlib.util
+def _probe_ollama() -> dict:
+    """Return the current Ollama availability and installed model names."""
     import httpx
     from nexus.config import config
-
-    checks: list[dict] = []
 
     try:
         response = httpx.get(f"{config.ollama_base_url}/api/tags", timeout=3)
         response.raise_for_status()
-        models = [model["name"] for model in response.json().get("models", [])]
-        if config.nexus_model in models:
-            checks.append(
-                {
-                    "level": "ok",
-                    "name": "Ollama",
-                    "message": f"running - default model ready: {config.nexus_model}",
-                }
-            )
-        elif models:
-            checks.append(
-                {
-                    "level": "warn",
-                    "name": "Ollama",
-                    "message": (
-                        f"running but default model '{config.nexus_model}' is missing - "
-                        f"available: {', '.join(models)}. Run: ollama pull {config.nexus_model}"
-                    ),
-                }
-            )
-        else:
-            checks.append(
-                {
-                    "level": "warn",
-                    "name": "Ollama",
-                    "message": f"running but no models - run: ollama pull {config.nexus_model}",
-                }
-            )
-    except Exception:
+        models = [model["name"] for model in response.json().get("models", []) if model.get("name")]
+        return {"online": True, "models": models, "error": None}
+    except Exception as error:
+        return {"online": False, "models": [], "error": str(error)}
+
+
+def _runtime_checks() -> list[dict]:
+    """Collect runtime dependency checks for status and doctor commands."""
+    import importlib.util
+    from nexus.config import config
+
+    checks: list[dict] = []
+
+    ollama_state = _probe_ollama()
+    if not ollama_state["online"]:
         checks.append(
             {
                 "level": "error",
                 "name": "Ollama",
                 "message": "not running - install from ollama.com then run: ollama serve",
+            }
+        )
+    elif config.nexus_model in ollama_state["models"]:
+        checks.append(
+            {
+                "level": "ok",
+                "name": "Ollama",
+                "message": f"running - default model ready: {config.nexus_model}",
+            }
+        )
+    elif ollama_state["models"]:
+        checks.append(
+            {
+                "level": "warn",
+                "name": "Ollama",
+                "message": (
+                    f"running but default model '{config.nexus_model}' is missing - "
+                    f"available: {', '.join(ollama_state['models'])}. Run: ollama pull {config.nexus_model}"
+                ),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "level": "warn",
+                "name": "Ollama",
+                "message": f"running but no models - run: ollama pull {config.nexus_model}",
             }
         )
 
@@ -208,7 +218,11 @@ def _summarize_runtime_checks(checks: list[dict]) -> tuple[int, int, int]:
 
 
 @cli.command()
-@click.option("--model", default=None, help="HuggingFace model to compress (e.g. microsoft/phi-3-mini-4k-instruct)")
+@click.option(
+    "--model",
+    default=None,
+    help="Compression source model alias or Hugging Face model id. Defaults to phi3:mini.",
+)
 @click.option("--bits", default=4, help="Quantization bits (4 or 8)")
 def init(model, bits):
     """Initialize NEXUS: compress a model, benchmark it, and start serving."""
@@ -219,8 +233,25 @@ def init(model, bits):
         from nexus.reflect.reflect_score import ReflectScore
 
         model_name = model or config.nexus_model
+        ollama_state = _probe_ollama()
+
+        if not ollama_state["online"]:
+            raise RuntimeError(
+                "Ollama is not running. Start it with `ollama serve`, "
+                f"then install the launch model with `ollama pull {config.nexus_model}`."
+            )
+        if config.nexus_model not in ollama_state["models"]:
+            raise RuntimeError(
+                f"Ollama is running but the launch model '{config.nexus_model}' is missing. "
+                f"Run: ollama pull {config.nexus_model}"
+            )
 
         console.print(Panel(f"[bold]Initializing NEXUS[/bold]\nModel: {model_name}\nBits: {bits}", style="cyan"))
+        if model_name != config.nexus_model:
+            console.print(
+                f"[yellow]NEXUS is currently optimized for the {config.nexus_model} launch path. "
+                f"Using custom compression source: {model_name}[/yellow]"
+            )
 
         engine = CompressXEngine()
         compressed_path = engine.compress(model_name, bits=bits)
