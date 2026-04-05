@@ -1,166 +1,96 @@
 # NEXUS
 
-Private AI developer OS for local coding, routing, trust scoring, and RAG protection.
+NEXUS is a local-first AI developer OS that runs on your machine, routes tasks across local and cloud models, scores answers before serving them, and adds canary-based RAG protection.
 
-NEXUS packages the ideas behind CompressX, AEON, ReflectScore, CanaryRAG, and CanaryVaults into one clean product repo.
-
-## What Is It?
-
-NEXUS is a local-first AI developer OS that runs on your machine, routes tasks across local and cloud models, checks answers before serving them, and protects RAG systems with canary-based security.
-
-Core pieces:
+## What It Includes
 
 - `CompressX` for model compression
 - `AEON` for routing and agent execution
 - `ReflectScore` for hallucination detection and response gating
 - `CanaryRAG` and `CanaryVaults` for canary seeding and leak monitoring
+- a Python CLI, FastAPI backend, and React dashboard
 
-## Does It Work On My Machine?
+## Launch Path
 
-Yes, if you can run Ollama locally.
-
-NEXUS is currently optimized for one first-class launch path:
+NEXUS is currently optimized for one first-class setup:
 
 - Ollama
 - `phi3:mini`
-
-Minimum path:
-
 - Python 3.11+
-- Ollama
-- one local model: `phi3:mini`
 
-Setup:
+That is the path the docs, checks, and launch UX are built around.
+
+## Quick Start
 
 ```bash
 pip install -e .
 ollama pull phi3:mini
 ollama serve
 nexus doctor
+nexus init
+nexus chat
 ```
 
-`nexus doctor` tells you exactly what is missing and how to fix it.
+If `phi3:mini` is missing, `nexus doctor` and `nexus init` will tell you to run:
 
-## What Can I Do Right Now?
+```bash
+ollama pull phi3:mini
+```
 
-Copy-paste these after install:
+## What You Can Do Right Now
 
 ```bash
 nexus init
 nexus chat
 nexus code "build a FastAPI auth service"
 nexus reflect
+nexus protect --seed https://example.com/docs
 ```
 
-You can also start the dashboard:
+Dashboard mode:
 
 ```bash
 nexus chat --dashboard
 ```
 
-## Free Forever
+## Free Core, Optional Upgrades
 
 NEXUS core is free forever for local use.
 
-If you run Ollama on your machine, NEXUS can already do useful work without any paid account:
+Free local path:
 
-- `nexus init` to prepare compression artifacts and run a serving-model benchmark
-- `nexus chat` for local-first chat
-- `nexus code "task"` for local coding help
-- `nexus reflect` with heuristic trust scoring
-- `nexus protect --seed <url>` with local canary fallback when the hosted API is unavailable
+- `nexus init` prepares compression artifacts and runs a serving-model benchmark
+- `nexus chat` runs on the local model
+- `nexus code` uses the local route by default
+- `nexus reflect` works with heuristic scoring
+- `nexus protect --seed` has a local fallback plan
 
-That means the default experience is:
+Optional keys:
 
-- no per-query billing from NEXUS
-- no required API key to get started
-- your hardware, your model, your cost
+- `GROQ_API_KEY` for live ReflectScore scoring
+- `ANTHROPIC_API_KEY` for stronger cloud fallback
+- `SUPABASE_URL` and `SUPABASE_KEY` for persistent memory
 
-## Bring Your Own Keys
-
-You only need external keys when you want stronger behavior than the local stack can provide:
-
-- `GROQ_API_KEY` improves ReflectScore from heuristic checks to live model-based scoring
-- `ANTHROPIC_API_KEY` enables stronger cloud fallback for hard tasks
-- `SUPABASE_URL` and `SUPABASE_KEY` enable persistent memory across sessions
-
-These are optional upgrades. NEXUS still runs without them.
-
-## Paid Products
-
-Hosted products are separate from the free local core:
+Hosted products:
 
 - `CanaryVaults` for real remote leak monitoring and alerting
 - future `NEXUS Cloud` for synced memory and multi-device state
 
-This keeps the product honest:
+## Honest Runtime Notes
 
-- free local usage does not create platform cost for NEXUS
-- paid revenue starts when users opt into hosted services
-- people can trust the product before they ever pay for anything
+- Ollama is required for the local launch path.
+- `nexus init` defaults to `phi3:mini`.
+- `nexus init` does not claim to benchmark the saved compressed artifact directly. It reports a serving-model proxy benchmark unless direct artifact execution is implemented.
+- `nexus protect --seed` works in local fallback mode.
+- `nexus protect --check` is guidance/fallback mode unless CanaryVaults is configured.
 
-## What Is Built
-
-- Python package and CLI in `nexus/`
-- FastAPI backend in `nexus/api.py`
-- React dashboard in `dashboard/`
-- Specialist agents for coding, research, memory, files, and canary workflows
-- Internal compression, trust-scoring, and canary modules inside `nexus/`
-
-## Quickstart
-
-### 1. Install
-
-Core install:
-
-```bash
-pip install -e .
-```
-
-Full install with optional cloud, compression, memory, and voice features:
-
-```bash
-pip install -e ".[full]"
-```
-
-Feature-specific installs:
-
-```bash
-pip install -e ".[cloud]"
-pip install -e ".[compression]"
-pip install -e ".[memory]"
-pip install -e ".[voice]"
-```
-
-### 2. Configure Environment
-
-On PowerShell:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-On macOS/Linux:
-
-```bash
-cp .env.example .env
-```
-
-Then fill in the keys you want to use.
-
-### 3. Run Setup Checks
+Run this any time:
 
 ```bash
 nexus doctor
 ```
 
-### 4. Start NEXUS
-
-```bash
-ollama serve
-nexus init
-nexus chat
-```
+It checks Ollama, the default model, and optional dependencies, then tells you exactly what is missing.
 
 ## Core Commands
 
@@ -180,13 +110,13 @@ nexus protect --seed https://example.com/docs
 
 ## ReflectScore Trust Layer
 
-ReflectScore sits between model output and the user.
+ReflectScore sits between model output and the user:
 
-- `score < 0.3`: serve the answer
-- `0.3 <= score < 0.6`: serve with warning
-- `score >= 0.6`: block and reroute to a stronger model
+- `< 0.3` serve
+- `0.3 to < 0.6` warn
+- `>= 0.6` block and reroute to a stronger model
 
-That makes ReflectScore both a benchmark layer and a live response gate.
+If both the first answer and the stronger fallback are high risk, NEXUS withholds the response instead of showing a likely hallucination.
 
 ## Architecture
 
@@ -202,37 +132,45 @@ NEXUS CLI / API / Dashboard
   `- CanaryRAG / CanaryVaults layer
 ```
 
-## Runtime Dependencies
+## Testing And CI
 
-NEXUS is designed to degrade gracefully when optional services are missing.
+The repo now includes a small regression suite for the launch-critical paths we fixed:
 
-- Ollama: required for local model execution
-- Groq API key: optional, enables live ReflectScore scoring instead of heuristic fallback
-- Anthropic API key: optional, enables stronger cloud reroute fallback
-- Supabase: optional, enables persistent memory
-- CanaryVaults API key: optional, enables real remote leak monitoring
+- file path safety
+- `doctor` dependency checks
+- ReflectScore heuristic scoring
+- benchmark path validation
+- `phi3:mini` alias handling
 
-Without a CanaryVaults key, `nexus protect --check` stays in fallback/guidance mode and `nexus protect --seed` uses a local seed plan.
+Run locally:
 
-Run `nexus doctor` any time to see what is configured and exactly what to fix.
+```bash
+python -m unittest discover -s tests -v
+```
+
+GitHub Actions also runs:
+
+- `python -m compileall nexus`
+- `python -m unittest discover -s tests -v`
 
 ## Repository Layout
 
 This repo intentionally keeps only the NEXUS product structure:
 
-- `nexus/` for the Python app, CLI, API, and runtime modules
+- `nexus/` for the Python app, CLI, API, agents, and runtime modules
 - `dashboard/` for the React frontend
-- `docs/` for launch and project docs
+- `docs/` for launch assets and project docs
+- `tests/` for the regression suite
 
 ## Dashboard
 
-Start the API and frontend together with:
+Start everything together:
 
 ```bash
 nexus chat --dashboard
 ```
 
-Or run them manually:
+Or run it manually:
 
 ```bash
 python -m uvicorn nexus.api:app --port 8000
@@ -248,6 +186,7 @@ Ready-to-use launch materials are in `docs/launch/`:
 - `DEMO_SCRIPT.md`
 - `HACKERNEWS_DRAFT.md`
 - `LAUNCH_CHECKLIST.md`
+- `COLD_INSTALL_REPORT.md`
 
 ## License
 
