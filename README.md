@@ -1,5 +1,13 @@
 # NEXUS
 
+> Private AI developer OS. Runs locally. Free forever.
+
+![Python](https://img.shields.io/badge/python-3.11+-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Stars](https://img.shields.io/github/stars/nagu-io/nexus)
+
+Built by a CS student from India. Every component - CompressX, AEON, ReflectScore, CanaryRAG - built from scratch.
+
 NEXUS is a local-first AI developer OS that runs on your machine, routes tasks across local and cloud models, scores answers before serving them, and adds canary-based RAG protection.
 
 ## What It Includes
@@ -73,7 +81,7 @@ Optional keys:
 
 Hosted products:
 
-- `CanaryVaults` for real remote leak monitoring and alerting
+- [CanaryVaults](https://canaryvaults.com) for real remote leak monitoring and alerting
 - future `NEXUS Cloud` for synced memory and multi-device state
 
 ## Honest Runtime Notes
