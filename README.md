@@ -45,6 +45,10 @@ If `phi3:mini` is missing, `nexus doctor` and `nexus init` will tell you to run:
 ollama pull phi3:mini
 ```
 
+Healthy first-run example:
+
+![NEXUS Doctor screenshot](docs/launch/assets/nexus-doctor-terminal.png)
+
 ## What You Can Do Right Now
 
 ```bash
