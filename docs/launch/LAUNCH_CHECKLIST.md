@@ -10,6 +10,7 @@
 - [x] Hacker News draft added
 - [x] X / LinkedIn launch draft added
 - [x] GitHub release note draft added
+- [x] Terminal screenshot asset added for launch posts
 - [x] Cold install verified and report added
 - [x] Tests added for launch-critical regressions
 - [x] GitHub Actions CI added

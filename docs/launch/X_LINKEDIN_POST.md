@@ -1,5 +1,9 @@
 # X And LinkedIn Launch Draft
 
+Attach this image when posting:
+
+- `docs/launch/assets/nexus-doctor-terminal.png`
+
 ## X Post
 
 Built NEXUS, a private AI developer OS that runs locally on your machine.
