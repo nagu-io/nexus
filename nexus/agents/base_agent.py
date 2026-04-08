@@ -4,7 +4,8 @@ Provides: run(), system_prompt, name, async HTTP client.
 """
 
 import asyncio
-from abc import ABC, abstractmethod
+from abc import ABC
+from typing import Any
 
 from rich.console import Console
 
@@ -18,15 +19,195 @@ class BaseAgent(ABC):
 
     name: str = "base"
     system_prompt: str = "You are a helpful AI assistant."
+    capabilities: tuple[str, ...] = ("reasoning",)
 
     def __init__(self):
         from nexus.config import config
         self.config = config
 
-    @abstractmethod
     async def run(self, task: str) -> str:
-        """Execute the task and return a response."""
-        pass
+        """Execute the task and return a response for text-oriented agents."""
+        raise NotImplementedError(f"{self.__class__.__name__} must implement run() or override act().")
+
+    def tool_call(
+        self,
+        *,
+        tool: str,
+        action: str,
+        arguments: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Build a structured tool request without breaking text-only agents."""
+        return {
+            "type": "tool_call",
+            "tool": tool,
+            "action": action,
+            "arguments": dict(arguments or kwargs),
+        }
+
+    def normalize_tool_call(self, value: Any) -> dict[str, Any] | None:
+        """Return a normalized tool request when an agent emitted one."""
+        if not isinstance(value, dict):
+            return None
+        if value.get("type") != "tool_call":
+            return None
+        tool = value.get("tool") or value.get("tool_name")
+        action = value.get("action")
+        if not tool or not action:
+            return None
+        return {
+            "type": "tool_call",
+            "tool": str(tool),
+            "action": str(action),
+            "arguments": dict(value.get("arguments") or value.get("args") or {}),
+        }
+
+    def supports_capabilities(self, required_capabilities: list[str] | tuple[str, ...]) -> bool:
+        """Return True when the agent advertises all required capabilities."""
+        return all(capability in self.capabilities for capability in required_capabilities)
+
+    async def think(self, task: str, memory: Any = None) -> dict[str, Any]:
+        """Build a lightweight plan for the current task."""
+        context = {}
+        if memory and hasattr(memory, "agent_context"):
+            context = memory.agent_context(self.name)
+        return {
+            "agent": self.name,
+            "task": task,
+            "context_keys": sorted(context.keys()),
+        }
+
+    async def act(self, task: str, memory: Any = None, thought: dict[str, Any] | None = None) -> str:
+        """Execute the agent's primary action."""
+        return await self.run(task)
+
+    async def continue_after_tool(
+        self,
+        task: str,
+        tool_result: dict[str, Any],
+        memory: Any = None,
+        thought: dict[str, Any] | None = None,
+    ) -> str | dict[str, Any]:
+        """Turn a tool result into a normal agent response by default."""
+        if tool_result.get("ok", False):
+            return tool_result.get("content") or tool_result.get("summary", "")
+        return tool_result.get("summary", "Tool error: tool execution failed")
+
+    async def observe(
+        self,
+        task: str,
+        result: str,
+        memory: Any = None,
+        thought: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Inspect the outcome and decide whether it looks healthy."""
+        result_text = result if isinstance(result, str) else str(result)
+        lowered = result_text.lower()
+        failure_markers = (
+            "error:",
+            "cloud error:",
+            "failed:",
+            "failed.",
+            "tool error:",
+            "access denied",
+            "file not found",
+            "invalid choice",
+            "no model backend is available",
+        )
+        ok = not any(marker in lowered for marker in failure_markers)
+        return {
+            "ok": ok,
+            "summary": result_text[:240],
+        }
+
+    async def reflect(
+        self,
+        task: str,
+        result: str,
+        observation: dict[str, Any],
+        memory: Any = None,
+        thought: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Turn observations into retry guidance for the orchestrator."""
+        if observation.get("ok", False):
+            return {
+                "should_retry": False,
+                "reason": "task completed",
+            }
+        return {
+            "should_retry": True,
+            "reason": observation.get("summary", "agent reported a recoverable failure"),
+        }
+
+    async def execute_cycle(self, task: str, memory: Any = None) -> dict[str, Any]:
+        """
+        Run the standard think -> act -> observe -> reflect lifecycle.
+
+        Existing agents remain backward compatible because `act()` delegates to
+        the current `run()` implementation unless a subclass overrides it.
+        """
+        thought = await self.think(task, memory=memory)
+        if memory and hasattr(memory, "append_event"):
+            memory.append_event("agent.think", self.name, {"task": task, "thought": thought})
+
+        result = await self.act(task, memory=memory, thought=thought)
+        if memory and hasattr(memory, "append_event"):
+            memory.append_event("agent.act", self.name, {"task": task, "result": result})
+
+        tool_request = self.normalize_tool_call(result)
+        if tool_request is not None:
+            if memory and hasattr(memory, "append_event"):
+                memory.append_event(
+                    "agent.tool_request",
+                    self.name,
+                    {"task": task, "tool_request": tool_request},
+                )
+            return {
+                "agent": self.name,
+                "thought": thought,
+                "result": "",
+                "tool_request": tool_request,
+                "observation": {
+                    "ok": False,
+                    "summary": f"requested tool {tool_request['tool']}::{tool_request['action']}",
+                    "tool_requested": True,
+                },
+                "reflection": {
+                    "should_retry": False,
+                    "reason": "awaiting tool execution",
+                    "strategy": "tool_call",
+                },
+            }
+
+        observation = await self.observe(task, result, memory=memory, thought=thought)
+        if memory and hasattr(memory, "append_event"):
+            memory.append_event(
+                "agent.observe",
+                self.name,
+                {"task": task, "observation": observation},
+            )
+
+        reflection = await self.reflect(
+            task,
+            result,
+            observation,
+            memory=memory,
+            thought=thought,
+        )
+        if memory and hasattr(memory, "append_event"):
+            memory.append_event(
+                "agent.reflect",
+                self.name,
+                {"task": task, "reflection": reflection},
+            )
+
+        return {
+            "agent": self.name,
+            "thought": thought,
+            "result": result,
+            "observation": observation,
+            "reflection": reflection,
+        }
 
     async def _call_local(self, prompt: str, system: str = None) -> str:
         """Call local Ollama model."""

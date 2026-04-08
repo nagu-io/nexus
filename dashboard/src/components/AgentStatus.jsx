@@ -1,3 +1,5 @@
+import React from 'react'
+
 const AGENTS = [
   { name: 'coding', color: 'text-cyan-400', dot: 'bg-cyan-400' },
   { name: 'research', color: 'text-blue-400', dot: 'bg-blue-400' },

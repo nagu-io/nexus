@@ -1,0 +1,14 @@
+{
+  "name": "nexus-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "python tools/dev.py",
+    "dev:check": "python tools/dev.py --check",
+    "dev:backend": "python -m uvicorn nexus.api:app --port 8000",
+    "dev:dashboard": "npm run dev --prefix dashboard",
+    "dashboard:install": "npm install --prefix dashboard",
+    "dashboard:dev": "npm run dev --prefix dashboard",
+    "dashboard:build": "npm run build --prefix dashboard",
+    "dashboard:preview": "npm run preview --prefix dashboard"
+  }
+}

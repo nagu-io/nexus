@@ -21,6 +21,7 @@ class MemoryAgent(BaseAgent):
     """
 
     name = "memory"
+    capabilities = ("memory_read", "memory_write", "reasoning")
     system_prompt = "You are a memory assistant. Help store and retrieve important information accurately."
 
     def __init__(self):

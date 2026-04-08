@@ -146,6 +146,12 @@ class JarvisInterface:
                 if result["warning"]:
                     warning_style = "yellow" if result["reflect_action"] != "block" else "red"
                     console.print(Panel(result["warning"], title="[bold]ReflectScore[/bold]", style=warning_style))
+                reduction = result.get("context_reduction")
+                if reduction and reduction.get("reduced"):
+                    console.print(
+                        f"[dim]Context reduced {reduction['original_length']} -> "
+                        f"{reduction['reduced_length']} chars via {reduction['backend']}[/dim]"
+                    )
                 console.print(Panel(response, title="[bold green]NEXUS[/bold green]", style="green"))
 
                 if self.voice_mode:

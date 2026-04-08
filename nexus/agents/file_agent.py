@@ -19,6 +19,7 @@ class FileAgent(BaseAgent):
     """
 
     name = "file"
+    capabilities = ("filesystem", "file_read", "file_write")
     system_prompt = "You are a file management assistant. Help read, write, and organize files."
 
     def _safe_dirs(self) -> list[Path]:

@@ -8,12 +8,15 @@ ReflectScore then decides whether to serve, warn, or block and reroute.
 """
 
 import asyncio
+from pathlib import Path
+import re
 from typing import Optional
 
 from rich.console import Console
 from rich.table import Table
 
 from nexus.router.provider_runtime import log_token_usage, retry_async
+from nexus.runtime.context_reducer import BaseContextReducer, ContextReductionResult, build_context_reducer
 
 console = Console()
 
@@ -38,6 +41,44 @@ COMPLEXITY_HIGH_SIGNALS = [
     "complete project",
 ]
 
+WORKSPACE_GROUNDING_SIGNALS = [
+    "this repo",
+    "this repository",
+    "this codebase",
+    "this project",
+    "current project",
+    "current repository",
+    "workspace",
+    "repo structure",
+    "repository structure",
+    "codebase structure",
+    "in this repo",
+    "in this repository",
+    "in this project",
+]
+
+CAPABILITY_QUERY_SIGNALS = [
+    "what can you build",
+    "what you can build",
+    "what can you do",
+    "how can you help",
+    "what do you do",
+    "what are your capabilities",
+    "show me what you can do",
+    "best demo",
+    "starter prompt",
+    "where should i start",
+    "what should i try first",
+]
+
+NEXUS_IDENTITY_SIGNALS = [
+    "what is nexus",
+    "how does nexus",
+    "what can nexus",
+    "nexus in one sentence",
+    "this dashboard",
+]
+
 
 class MindRouter:
     """
@@ -46,13 +87,20 @@ class MindRouter:
     serve, warn on, or block and reroute the answer.
     """
 
-    def __init__(self):
+    def __init__(self, *, context_reducer: BaseContextReducer | None = None):
         from nexus.config import config
 
         self.config = config
         self.stats = {"local": 0, "cloud": 0, "agent": 0}
         self.reflect_stats = {"clean": 0, "warning": 0, "blocked": 0, "rerouted": 0}
         self._agents = {}
+        self.context_reducer = context_reducer or build_context_reducer(
+            enabled=config.context_reduction_enabled,
+            backend=config.context_reduction_backend,
+            threshold_chars=config.context_reduction_threshold_chars,
+            target_chars=config.context_reduction_target_chars,
+            model_name=config.context_reduction_model,
+        )
 
     def _get_agent(self, name: str):
         """Lazy-load agents to avoid circular imports."""
@@ -110,12 +158,159 @@ class MindRouter:
 
         return min(max(score, 0.0), 1.0)
 
+    def _should_ground_in_workspace(self, task: str) -> bool:
+        """Return True when the prompt is about this local repo/project, not the public web."""
+        task_lower = task.lower()
+        if any(signal in task_lower for signal in WORKSPACE_GROUNDING_SIGNALS + CAPABILITY_QUERY_SIGNALS + NEXUS_IDENTITY_SIGNALS):
+            return True
+        capability_patterns = (
+            r"\bwhat (can|do)\s+(you|nexus)\b",
+            r"\bhow can\s+(you|nexus)\b",
+            r"\bwhat you can\b",
+            r"\bwhere should i start\b",
+            r"\bwhat should i try first\b",
+        )
+        return any(re.search(pattern, task_lower) for pattern in capability_patterns)
+
+    def _workspace_root(self) -> Path:
+        """Resolve the local project root for repository-grounded answers."""
+        cwd = Path.cwd().resolve()
+        if (cwd / "README.md").exists() or (cwd / "pyproject.toml").exists():
+            return cwd
+        return Path(__file__).resolve().parents[2]
+
+    def _workspace_context(self) -> str:
+        """Collect a small, stable snapshot of the local workspace for grounded prompts."""
+        root = self._workspace_root()
+        hidden_entries = {".git", ".venv", "node_modules", "__pycache__", "dist", "build"}
+        entries = []
+        try:
+            for item in sorted(root.iterdir(), key=lambda path: (not path.is_dir(), path.name.lower())):
+                if item.name in hidden_entries:
+                    continue
+                prefix = "[DIR]" if item.is_dir() else "[FILE]"
+                entries.append(f"{prefix} {item.name}")
+                if len(entries) >= 12:
+                    break
+        except Exception:
+            entries = []
+
+        sections = [
+            f"Workspace root: {root}",
+            "Top-level entries:\n" + ("\n".join(entries) if entries else "Unavailable"),
+            "Known product surfaces:\n- CLI runtime via main.py\n- FastAPI API via nexus/api.py\n- React dashboard via dashboard/src/App.jsx\n- Runtime explainability via nexus/runtime/insights.py",
+        ]
+
+        file_specs = [
+            ("README.md", "README excerpt", 1600),
+            ("pyproject.toml", "Python project metadata", 800),
+            ("package.json", "Root workspace scripts", 500),
+            ("dashboard/package.json", "Dashboard scripts", 500),
+        ]
+        for relative_path, label, limit in file_specs:
+            excerpt = self._read_workspace_file(root / relative_path, limit)
+            if excerpt:
+                sections.append(f"{label} ({relative_path}):\n{excerpt}")
+
+        return "\n\n".join(sections)
+
+    def _read_workspace_file(self, path: Path, limit: int) -> str:
+        """Read a small excerpt from a workspace file for local grounding."""
+        try:
+            if not path.exists():
+                return ""
+            return path.read_text(encoding="utf-8", errors="replace")[:limit]
+        except Exception:
+            return ""
+
+    def _build_workspace_prompt(self, task: str, intent: Optional[str]) -> str:
+        """Build a repository-grounded prompt for local capability or repo questions."""
+        focus = (
+            "Summarize what this local NEXUS project can do right now and suggest 2 or 3 strong next prompts or commands."
+            if any(signal in task.lower() for signal in CAPABILITY_QUERY_SIGNALS)
+            else "Answer using the local repository context and mention the most relevant files when helpful."
+        )
+        return (
+            "You are answering questions about the local NEXUS repository in the current workspace.\n"
+            "Use only the repository context below. Do not rely on web search or outside facts.\n"
+            "Treat NEXUS as this local project, not any outside product or acronym.\n"
+            "Do not mention alternate meanings of NEXUS.\n"
+            "Do not write code unless the user explicitly asks for code.\n"
+            "If the context is incomplete, say what is clear from the repo and what remains uncertain.\n"
+            "Keep the answer concise, concrete, and grounded.\n\n"
+            f"Detected intent: {intent or 'unknown'}\n"
+            f"Instruction: {focus}\n\n"
+            f"User question:\n{task}\n\n"
+            f"Repository context:\n{self._workspace_context()}"
+        )
+
     def _record_reflect_result(self, verdict: str, rerouted: bool):
         """Record the final ReflectScore outcome in router stats."""
         if verdict in self.reflect_stats:
             self.reflect_stats[verdict] += 1
         if rerouted:
             self.reflect_stats["rerouted"] += 1
+
+    def _prepare_route_prompt(
+        self,
+        prompt: str,
+        *,
+        route: str,
+        intent: Optional[str],
+        workspace_grounded: bool,
+    ) -> tuple[str, ContextReductionResult | None]:
+        """Reduce oversized route prompts while keeping the original task for trust scoring."""
+        if self.context_reducer is None:
+            return prompt, None
+
+        reduction = self.context_reducer.reduce(
+            prompt,
+            metadata={
+                "scope": "router",
+                "route": route,
+                "intent": intent or "unknown",
+                "workspace_grounded": workspace_grounded,
+            },
+        )
+        if reduction.reduced:
+            console.print(
+                f"[dim]Context reduced {reduction.original_length} -> "
+                f"{reduction.reduced_length} chars via {reduction.backend}[/dim]"
+            )
+            return reduction.text, reduction
+        return prompt, None
+
+    async def _call_agent_runtime(self, task: str, agent_name: str) -> str:
+        """Run a specialist agent through the orchestrator instead of calling it directly."""
+        from nexus.blueprint_generator import TaskBlueprint, WorkflowBlueprint
+        from nexus.orchestrator import Orchestrator
+
+        prototype = self._get_agent(agent_name)
+        confidence_threshold = 0.55 if "reasoning" in getattr(prototype, "capabilities", ()) else 0.0
+        retry_strategy = "tighten_prompt" if confidence_threshold > 0 else "repeat"
+
+        blueprint = WorkflowBlueprint(
+            goal=task,
+            primary_intent=agent_name,
+            tasks=[
+                TaskBlueprint(
+                    id=f"{agent_name}_1",
+                    task_type=f"router_{agent_name}",
+                    agent=agent_name,
+                    instruction=task,
+                    retries=1,
+                    timeout_seconds=30,
+                    output_key="router_response",
+                    retry_strategy=retry_strategy,
+                    confidence_threshold=confidence_threshold,
+                    required_capabilities=list(getattr(prototype, "capabilities", ())),
+                    candidate_agents=[agent_name],
+                )
+            ],
+            metadata={"source": "mind_router"},
+        )
+        result = await Orchestrator().run_blueprint(blueprint)
+        return result["final_output"]
 
     async def route(self, task: str, force_agent: Optional[str] = None, return_meta: bool = False):
         """
@@ -136,25 +331,60 @@ class MindRouter:
         scorer = ReflectScore()
         intent = force_agent or self.classify_intent(task)
         complexity = self.score_complexity(task)
+        workspace_grounded = not force_agent and self._should_ground_in_workspace(task)
 
-        console.print(f"[dim]Router: intent={intent}, complexity={complexity:.2f}[/dim]")
+        console.print(
+            f"[dim]Router: intent={intent}, complexity={complexity:.2f}, "
+            f"workspace_grounded={workspace_grounded}[/dim]"
+        )
 
-        if intent and intent in ["coding", "research", "memory", "file", "canary"]:
+        prepared_prompt = task
+        context_reduction = None
+
+        if workspace_grounded:
+            initial_route = "local"
+            console.print("[green]-> Routing to workspace-grounded local model[/green]")
+            self.stats["local"] += 1
+            prepared_prompt, context_reduction = self._prepare_route_prompt(
+                self._build_workspace_prompt(task, intent),
+                route=initial_route,
+                intent=intent,
+                workspace_grounded=workspace_grounded,
+            )
+            initial_response = await self._call_local(prepared_prompt)
+        elif intent and intent in ["coding", "research", "memory", "file", "canary"]:
             initial_route = "agent"
             console.print(f"[cyan]-> Routing to {intent} agent[/cyan]")
             self.stats["agent"] += 1
-            executor = self._get_agent(intent)
-            initial_response = await executor.run(task)
+            prepared_prompt, context_reduction = self._prepare_route_prompt(
+                task,
+                route=initial_route,
+                intent=intent,
+                workspace_grounded=workspace_grounded,
+            )
+            initial_response = await self._call_agent_runtime(prepared_prompt, intent)
         elif complexity < self.config.routing_complexity_threshold:
             initial_route = "local"
             console.print(f"[green]-> Routing to local model ({self.config.nexus_model})[/green]")
             self.stats["local"] += 1
-            initial_response = await self._call_local(task)
+            prepared_prompt, context_reduction = self._prepare_route_prompt(
+                task,
+                route=initial_route,
+                intent=intent,
+                workspace_grounded=workspace_grounded,
+            )
+            initial_response = await self._call_local(prepared_prompt)
         else:
             initial_route = "cloud"
             console.print("[yellow]-> Routing to cloud model (Anthropic)[/yellow]")
             self.stats["cloud"] += 1
-            initial_response = await self._call_cloud(task)
+            prepared_prompt, context_reduction = self._prepare_route_prompt(
+                task,
+                route=initial_route,
+                intent=intent,
+                workspace_grounded=workspace_grounded,
+            )
+            initial_response = await self._call_cloud(prepared_prompt)
 
         initial_assessment = await scorer.assess_response(task, initial_response)
         console.print(
@@ -175,7 +405,7 @@ class MindRouter:
             )
             final_route = "cloud"
             was_rerouted = True
-            final_response = await self._call_cloud(task)
+            final_response = await self._call_cloud(prepared_prompt)
             final_assessment = await scorer.assess_response(task, final_response)
             console.print(
                 f"[dim]ReflectScore after re-route: {final_assessment['score']:.2f} "
@@ -216,6 +446,8 @@ class MindRouter:
             "reflect_action": final_assessment["action"],
             "initial_reflect_score": initial_assessment["score"],
             "initial_reflect_verdict": initial_assessment["verdict"],
+            "workspace_grounded": workspace_grounded,
+            "context_reduction": context_reduction.to_dict() if context_reduction is not None else None,
         }
 
     async def _call_local(self, task: str) -> str:
@@ -302,4 +534,8 @@ class MindRouter:
         table.add_row("Reflect Warning", str(self.reflect_stats["warning"]))
         table.add_row("Reflect Blocked", str(self.reflect_stats["blocked"]))
         table.add_row("Reflect Re-routed", str(self.reflect_stats["rerouted"]))
+        table.add_row(
+            "Context Reduction",
+            getattr(self.context_reducer, "backend_name", "custom") if self.context_reducer is not None else "disabled",
+        )
         console.print(table)

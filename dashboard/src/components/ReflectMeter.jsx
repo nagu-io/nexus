@@ -1,3 +1,5 @@
+import React from 'react'
+
 export default function ReflectMeter({ reflect, stats }) {
   const pct = reflect?.score !== null && reflect?.score !== undefined ? Math.round(reflect.score * 100) : null
   const verdict = reflect?.verdict || 'awaiting'

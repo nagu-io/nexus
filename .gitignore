@@ -17,4 +17,6 @@ dashboard/dist/
 dashboard/node_modules/
 nexus/router/logs/
 .tmp-launch-venv/
-
+generated/
+.tmp-*
+.test-final.txt

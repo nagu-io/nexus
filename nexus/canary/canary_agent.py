@@ -25,6 +25,7 @@ class CanaryAgent(BaseAgent):
     """
 
     name = "canary"
+    capabilities = ("security", "monitoring", "api_call")
     system_prompt = "You are a data security assistant specializing in RAG leak detection."
 
     def _extract_source_url(self, task: str) -> str | None:

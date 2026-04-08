@@ -10,6 +10,13 @@ from pydantic import BaseModel
 load_dotenv()
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class NexusConfig(BaseModel):
     # Supabase
     supabase_url: str = os.getenv("SUPABASE_URL", "")
@@ -37,6 +44,11 @@ class NexusConfig(BaseModel):
     reflect_warn_threshold: float = float(os.getenv("NEXUS_REFLECT_WARN_THRESHOLD", "0.3"))
     reflect_block_threshold: float = float(os.getenv("NEXUS_REFLECT_BLOCK_THRESHOLD", "0.6"))
     data_dir: Path = Path(os.getenv("NEXUS_DATA_DIR", "~/.nexus")).expanduser()
+    context_reduction_enabled: bool = _env_bool("NEXUS_CONTEXT_REDUCTION_ENABLED", True)
+    context_reduction_backend: str = os.getenv("NEXUS_CONTEXT_REDUCTION_BACKEND", "heuristic")
+    context_reduction_threshold_chars: int = int(os.getenv("NEXUS_CONTEXT_REDUCTION_THRESHOLD_CHARS", "12000"))
+    context_reduction_target_chars: int = int(os.getenv("NEXUS_CONTEXT_REDUCTION_TARGET_CHARS", "6000"))
+    context_reduction_model: str = os.getenv("NEXUS_CONTEXT_REDUCTION_MODEL", "")
 
     class Config:
         arbitrary_types_allowed = True
