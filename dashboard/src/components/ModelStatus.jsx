@@ -33,11 +33,11 @@ export default function ModelStatus({ status }) {
         <span className="meta-pill mono text-[11px]">{localBackend}</span>
       </div>
 
-      <div className="mt-4 space-y-3">
+      <div className="mt-3 space-y-1.5">
         {rows.map(row => (
-          <div key={row.label} className="panel-muted flex items-center justify-between px-3 py-3">
-            <span className="text-sm text-[var(--text-soft)]">{row.label}</span>
-            <span className={`mono text-sm ${row.tone}`}>{row.value}</span>
+          <div key={row.label} className="panel-muted flex items-center justify-between px-3 py-2">
+            <span className="text-xs text-[var(--text-soft)]">{row.label}</span>
+            <span className={`mono text-xs font-medium ${row.tone}`}>{row.value}</span>
           </div>
         ))}
       </div>

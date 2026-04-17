@@ -169,17 +169,18 @@ export default function ModelControlCenter({ apiUrl }) {
           </button>
         </div>
 
-        <div className="mt-4 grid gap-2 md:grid-cols-3">
+        <div className="mt-4 space-y-2">
           {runtimeCards.map(card => {
             const Icon = card.icon
             return (
-              <div key={card.label} className="panel-muted px-3 py-3">
-                <div className="flex items-center gap-2 text-[var(--text-soft)]">
+              <div key={card.label} className="panel-muted px-3 py-2.5 flex items-center gap-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[rgba(255,255,255,0.04)] text-[var(--text-soft)]">
                   <Icon size={14} />
-                  <span className="section-label text-[10px]">{card.label}</span>
                 </div>
-                <p className="mt-2 text-lg font-semibold tracking-[-0.03em] text-[var(--text-strong)]">{card.value}</p>
-                <p className="mt-1 text-xs leading-5 text-[var(--text-soft)]">{card.detail}</p>
+                <div className="min-w-0 flex-1">
+                  <p className="section-label text-[10px]">{card.label}</p>
+                  <p className="mt-0.5 text-sm font-semibold tracking-[-0.03em] text-[var(--text-strong)] truncate">{card.value}</p>
+                </div>
               </div>
             )
           })}

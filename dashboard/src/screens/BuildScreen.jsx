@@ -159,12 +159,8 @@ export default function BuildScreen({ initialStatus = null, desktopInfo = null }
 
         <div className="grid min-h-0 flex-1 xl:grid-cols-[296px_minmax(0,1fr)_340px]">
           <aside className="flex min-h-0 flex-col border-r border-[var(--border)] panel-muted">
-            <div className="border-b border-[var(--border)] px-4 py-4">
-              <div className="flex items-center gap-2">
-                <span className="section-label font-display">Workspace</span>
-                <span className="text-xs text-[var(--text-soft)]">repo and memory</span>
-              </div>
-              <div className="mt-4 flex gap-1.5">
+            <div className="border-b border-[var(--border)] px-4 py-3">
+              <div className="flex items-center gap-1.5">
                 <SidebarTab
                   active={leftPanel === 'files'}
                   icon={FolderTree}
@@ -213,53 +209,55 @@ export default function BuildScreen({ initialStatus = null, desktopInfo = null }
           <main className="relative flex min-h-0 flex-col bg-transparent">
             <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[rgba(255,255,255,0.02)] to-transparent" />
 
-            <header className="relative border-b border-[var(--border)] px-4 py-2.5 bg-[rgba(255,255,255,0.01)]">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  {statusChips.map(chip => (
-                    <span key={chip} className="meta-pill mono text-[10px] font-semibold tracking-wider">
-                      {chip}
-                    </span>
-                  ))}
+            <header className="relative border-b border-[var(--border)] px-4 py-2 bg-[rgba(255,255,255,0.01)]">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="meta-pill mono text-[10px] font-semibold tracking-wider shrink-0">
+                    {status?.local_backend || 'backend'}
+                  </span>
+                  <span className="meta-pill mono text-[10px] tracking-wider shrink-0">
+                    {flowLabel}
+                  </span>
                   {workspaceLabel && (
-                    <span className="meta-pill mono text-[10px]">{shortPath(workspaceLabel, 44)}</span>
+                    <span className="meta-pill mono text-[10px] truncate max-w-[200px]" title={workspaceLabel}>
+                      {shortPath(workspaceLabel, 32)}
+                    </span>
                   )}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5 shrink-0">
                   <button
                     onClick={() => setShowActivity(value => !value)}
-                    className={`meta-pill interactive mono text-[10px] font-semibold tracking-wider ${
+                    className={`meta-pill interactive mono text-[10px] tracking-wider ${
                       showActivity
-                        ? 'border-[rgba(255,255,255,0.2)] text-[var(--text-strong)] shadow-[0_0_15px_rgba(255,255,255,0.06)] bg-[rgba(255,255,255,0.06)]'
+                        ? 'border-[rgba(255,255,255,0.2)] text-[var(--text-strong)] bg-[rgba(255,255,255,0.06)]'
                         : ''
                     }`}
                   >
-                    <PanelBottom size={11} />
-                    {showActivity ? 'hide activity' : 'show activity'}
+                    <PanelBottom size={10} />
+                    {showActivity ? 'hide' : 'activity'}
                   </button>
                   <button
                     onClick={() => setProviderSettingsOpen(true)}
-                    className="meta-pill interactive mono text-[10px] font-semibold tracking-wider"
+                    className="meta-pill interactive mono text-[10px] tracking-wider"
                   >
-                    <KeyRound size={11} />
-                    OpenRouter
+                    <KeyRound size={10} />
+                    keys
                   </button>
                   <button
                     onClick={() => {
                       void loadStatus({ quiet: false })
                       void loadOverview({ quiet: false })
                     }}
-                    className="meta-pill interactive mono text-[10px] font-semibold tracking-wider"
+                    className="meta-pill interactive mono text-[10px] tracking-wider"
                   >
-                    <RefreshCw size={11} />
-                    refresh
+                    <RefreshCw size={10} />
                   </button>
                 </div>
               </div>
 
               {(statusError || degradedMode || overviewError) && (
-                <div className="mt-2.5 flex flex-col gap-2">
+                <div className="mt-2 flex flex-col gap-2">
                   {statusError && <Banner tone="danger">{statusError}</Banner>}
                   {degradedMode && (
                     <Banner tone="warning">
@@ -308,14 +306,11 @@ export default function BuildScreen({ initialStatus = null, desktopInfo = null }
           </main>
 
           <aside className="hidden min-h-0 flex-col border-l border-[var(--border)] panel-muted xl:flex">
-            <div className="border-b border-[var(--border)] px-4 py-4">
-              <div className="flex items-center gap-2">
+            <div className="border-b border-[var(--border)] px-4 py-3">
+              <div className="flex items-center justify-between">
                 <span className="section-label">Mission Rail</span>
-                <span className="text-xs text-[var(--text-soft)]">runtime telemetry</span>
+                <span className="text-[10px] mono text-[var(--text-muted)] tracking-wider">live telemetry</span>
               </div>
-              <p className="mt-3 text-sm leading-6 text-[var(--text-soft)]">
-                Live model health, trust verdicts, agent activity, and recent workflow traces.
-              </p>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto p-3">

@@ -18,28 +18,28 @@ export default function AgentStatus({ active, stats }) {
         </span>
       </div>
 
-      <div className="mt-4 space-y-2">
+      <div className="mt-3 space-y-1.5">
         {AGENTS.map(agent => {
           const isActive = active === agent.name
           return (
             <div
               key={agent.name}
-              className={`panel-muted flex items-center justify-between px-3 py-3 transition-colors ${
+              className={`panel-muted flex items-center justify-between px-3 py-2 transition-colors ${
                 isActive ? 'border border-[var(--accent)] shadow-[0_0_10px_rgba(0,240,255,0.15)] bg-[rgba(0,240,255,0.05)]' : 'border border-transparent'
               }`}
             >
-              <div className="flex items-center gap-3">
-                <span className={`h-2.5 w-2.5 rounded-full ${isActive ? agent.tone.split(' ')[0] : 'bg-[rgba(255,255,255,0.12)]'}`} />
-                <span className={`mono text-sm ${isActive ? 'text-[var(--text-strong)]' : 'text-[var(--text-soft)]'}`}>
+              <div className="flex items-center gap-2.5">
+                <span className={`h-2 w-2 rounded-full ${isActive ? agent.tone.split(' ')[0] : 'bg-[rgba(255,255,255,0.12)]'}`} />
+                <span className={`mono text-xs ${isActive ? 'text-[var(--text-strong)]' : 'text-[var(--text-soft)]'}`}>
                   {agent.name}
                 </span>
               </div>
               {isActive ? (
-                <span className={`rounded-full px-2.5 py-1 text-[10px] font-medium ${agent.tone}`}>
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${agent.tone}`}>
                   live
                 </span>
               ) : (
-                <span className="text-xs text-[var(--text-soft)]">ready</span>
+                <span className="text-[10px] text-[var(--text-soft)] tracking-wider uppercase">ready</span>
               )}
             </div>
           )
