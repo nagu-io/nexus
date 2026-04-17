@@ -1,19 +1,20 @@
-import React from 'react'
+import React, { useMemo } from 'react'
 import { AppWindow, Cpu, HardDrive, Minus, Square, Wifi, WifiOff, X } from 'lucide-react'
+import { getWindowControls } from '../lib/runtime.js'
 
 export default function DesktopTitleBar({ desktopInfo, status, connected, workspaceRoot }) {
-  const controls = window?.nexusDesktop?.windowControls
+  const controls = useMemo(() => getWindowControls(), [])
   const backendOnline = Boolean(status?.online)
   const normalizedWorkspace = workspaceRoot || status?.workspace_root || ''
 
   return (
-    <header className="app-drag relative border-b border-[var(--border)] bg-[rgba(7,9,15,0.88)]">
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(0,240,255,0.08),transparent_22%,transparent_78%,rgba(191,0,255,0.08))]" />
+    <header data-tauri-drag-region className="app-drag relative border-b border-[var(--border-strong)] bg-black/40 backdrop-blur-3xl">
+      <div data-tauri-drag-region className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.03),transparent_22%,transparent_78%,rgba(255,255,255,0.015))]" />
 
-      <div className="relative flex h-[52px] items-center justify-between gap-3 px-4">
+      <div data-tauri-drag-region className="relative flex h-[52px] items-center justify-between gap-3 px-4">
         <div className="app-no-drag flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[rgba(255,255,255,0.04)] text-[var(--accent)] shadow-[0_0_18px_rgba(0,240,255,0.12)]">
-            <AppWindow size={17} />
+          <div className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[rgba(255,255,255,0.02)] text-[var(--text-strong)] shadow-[0_0_20px_rgba(255,255,255,0.06)]">
+            <AppWindow size={16} strokeWidth={1.5} />
           </div>
 
           <div className="min-w-0">

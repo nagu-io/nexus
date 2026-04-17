@@ -3,7 +3,8 @@
     "beforeDevCommand": "npm run dashboard:dev",
     "beforeBuildCommand": "npm run dashboard:build",
     "devPath": "http://localhost:5173",
-    "distDir": "../dashboard/dist"
+    "distDir": "../dashboard/dist",
+    "withGlobalTauri": true
   },
   "package": {
     "productName": "NEXUS",
@@ -43,12 +44,16 @@
     "windows": [
       {
         "fullscreen": false,
+        "maximized": true,
+        "center": true,
         "resizable": true,
         "title": "NEXUS",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 900,
-        "minHeight": 600
+        "width": 1600,
+        "height": 1000,
+        "minWidth": 1200,
+        "minHeight": 800,
+        "decorations": false,
+        "transparent": true
       }
     ]
   }

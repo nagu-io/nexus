@@ -2,27 +2,41 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   backend:
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out code
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install fastapi uvicorn
+      - name: Install Python dependencies
+        run: pip install -e .
 
-      - name: Run tests
-        run: uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+      - name: Run backend tests
+        run: python -m pytest tests/ -v --tb=short
+
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dashboard dependencies
+        run: npm --prefix dashboard install
+
+      - name: Build dashboard
+        run: npm --prefix dashboard run build

@@ -39,3 +39,10 @@ src-tauri/cargo_out.txt
 generated/
 .tmp-*
 .test-final.txt
+.codex_logs/
+nexus_dataset.jsonl
+Modelfile
+run_training_pipeline.bat
+package-lock.json
+src-tauri/target/
+

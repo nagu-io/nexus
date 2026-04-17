@@ -12,6 +12,11 @@ pub fn start_python_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::err
     // We launch it in the daemon mode from working dir.
     // In production we would package it, but for now we follow the script.
     let current_dir = std::env::current_dir().unwrap_or_else(|_| app_dir.clone());
+
+    // Build PYTHONPATH relative to the working directory so the setup is portable
+    let nexus_root = current_dir.to_string_lossy().to_string();
+    let nexus_pkgs = current_dir.join(".nexus_pkgs").to_string_lossy().to_string();
+    let python_path = format!("{};{}", nexus_root, nexus_pkgs);
     
     std::process::Command::new("python")
         .args([
@@ -20,7 +25,7 @@ pub fn start_python_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::err
             "--host", "127.0.0.1",
             "--port", "8000",
         ])
-        .env("PYTHONPATH", "D:\\nexus;D:\\nexus\\.nexus_pkgs")
+        .env("PYTHONPATH", &python_path)
         .current_dir(&current_dir)
         .spawn()
         .map_err(|e| format!("failed to start NEXUS backend: {}", e))?;

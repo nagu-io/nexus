@@ -33,7 +33,7 @@ export default function Chat({ apiUrl, events = [], workspaceRoot, onReflectStat
   const [workspaceMode, setWorkspaceMode] = useState(Boolean(workspaceRoot))
   const [executionMode, setExecutionMode] = useState('stable')
   const messagesViewportRef = useRef(null)
-  const [sessionId] = useState(() => getOrCreateSessionId())
+  const [sessionId] = useState(() => getOrCreateSessionId(workspaceRoot))
 
   useEffect(() => {
     const viewport = messagesViewportRef.current
@@ -323,13 +323,13 @@ export default function Chat({ apiUrl, events = [], workspaceRoot, onReflectStat
                 <span className="section-label">Prompt</span>
                 <span className={`meta-pill mono text-[11px] font-semibold ${
                   workspaceMode && workspaceRoot
-                    ? 'border-[rgba(0,240,255,0.3)] bg-[rgba(0,240,255,0.08)] text-[var(--accent)] shadow-[0_0_10px_rgba(0,240,255,0.1)]'
+                    ? 'border-[rgba(255,255,255,0.2)] bg-[rgba(255,255,255,0.05)] text-[var(--text-strong)] shadow-[0_0_10px_rgba(255,255,255,0.05)]'
                     : ''
                 }`}>
                   {workspaceMode && workspaceRoot ? 'repo execution' : 'chat only'}
                 </span>
                 {workspaceMode && workspaceRoot && (
-                  <span className="meta-pill mono text-[11px] border-[rgba(191,0,255,0.3)] bg-[rgba(191,0,255,0.08)] text-[var(--accent-2)] shadow-[0_0_10px_rgba(191,0,255,0.1)]">
+                  <span className="meta-pill mono text-[11px] border-[rgba(255,255,255,0.2)] bg-[rgba(255,255,255,0.05)] text-[var(--text-strong)] shadow-[0_0_10px_rgba(255,255,255,0.05)]">
                     policy {executionMode}
                   </span>
                 )}
@@ -354,7 +354,7 @@ export default function Chat({ apiUrl, events = [], workspaceRoot, onReflectStat
             <button
               onClick={() => send()}
               disabled={loading || !input.trim()}
-              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-[var(--text-strong)] px-5 py-2.5 text-sm font-bold text-[#07090f] transition-all hover:bg-[var(--accent)] hover:shadow-[0_0_20px_rgba(0,240,255,0.4)] hover:scale-105 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-[var(--text-strong)] disabled:hover:scale-100 disabled:hover:shadow-none"
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-[var(--text-strong)] px-5 py-2.5 text-sm font-bold text-black transition-all hover:bg-[rgba(255,255,255,0.9)] hover:shadow-[0_0_20px_rgba(255,255,255,0.2)] hover:scale-105 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-[var(--text-strong)] disabled:hover:scale-100 disabled:hover:shadow-none"
             >
               {loading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
               Send
@@ -377,7 +377,7 @@ function EmptyState({
   return (
     <div className="space-y-6 pb-6 fade-in pt-4">
       <section className="rounded-[24px] panel-surface px-6 py-6 shadow-2xl relative overflow-hidden">
-        <div className="absolute top-0 right-0 p-32 bg-[radial-gradient(ellipse_at_center,rgba(0,240,255,0.05),transparent_70%)] pointer-events-none" />
+        <div className="absolute top-0 right-0 p-32 bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.02),transparent_70%)] pointer-events-none" />
         <div className="flex flex-wrap items-center gap-2">
           <span className="section-label">New Task</span>
           <span className="meta-pill mono text-[11px]">
@@ -388,7 +388,7 @@ function EmptyState({
             disabled={!workspaceRoot}
             className={`meta-pill interactive mono text-[11px] font-semibold ${
               workspaceMode && workspaceRoot
-                ? 'border-[rgba(0,240,255,0.4)] bg-[rgba(0,240,255,0.05)] text-[var(--accent)] shadow-[0_0_15px_rgba(0,240,255,0.15)]'
+                ? 'border-[rgba(255,255,255,0.2)] bg-[rgba(255,255,255,0.05)] text-[var(--text-strong)] shadow-[0_0_15px_rgba(255,255,255,0.05)]'
                 : ''
             } ${!workspaceRoot ? 'opacity-50' : ''}`}
           >
@@ -400,7 +400,7 @@ function EmptyState({
               onClick={() => onSetExecutionMode(mode)}
               className={`meta-pill interactive mono text-[11px] font-semibold ${
                 executionMode === mode
-                  ? 'border-[rgba(191,0,255,0.4)] bg-[rgba(191,0,255,0.05)] text-[var(--accent-2)] shadow-[0_0_15px_rgba(191,0,255,0.15)]'
+                  ? 'border-[rgba(255,255,255,0.2)] bg-[rgba(255,255,255,0.05)] text-[var(--text-strong)] shadow-[0_0_15px_rgba(255,255,255,0.05)]'
                   : ''
               }`}
             >
@@ -423,7 +423,7 @@ function EmptyState({
           <button
             key={prompt}
             onClick={() => onPromptSelect(prompt)}
-            className="rounded-[22px] panel-soft px-5 py-5 text-left text-[14px] leading-relaxed text-[var(--text-soft)] transition-all hover:border-[rgba(0,240,255,0.3)] hover:bg-[rgba(0,240,255,0.02)] hover:text-[var(--text-strong)] hover:shadow-[0_8px_30px_rgba(0,240,255,0.05)] hover:-translate-y-1 block"
+            className="rounded-[22px] panel-soft px-5 py-5 text-left text-[14px] leading-relaxed text-[var(--text-soft)] transition-all hover:border-[rgba(255,255,255,0.15)] hover:bg-[rgba(255,255,255,0.02)] hover:text-[var(--text-strong)] hover:shadow-[0_8px_30px_rgba(255,255,255,0.03)] hover:-translate-y-1 block"
           >
             {prompt}
           </button>
@@ -433,12 +433,13 @@ function EmptyState({
   )
 }
 
-function getOrCreateSessionId() {
+function getOrCreateSessionId(workspaceRoot) {
   try {
-    const existing = window.localStorage.getItem('nexus_session_id')
+    const key = workspaceRoot ? `nexus_session_${workspaceRoot}` : 'nexus_session_global'
+    const existing = window.localStorage.getItem(key)
     if (existing) return existing
     const created = window.crypto?.randomUUID?.() || `session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    window.localStorage.setItem('nexus_session_id', created)
+    window.localStorage.setItem(key, created)
     return created
   } catch {
     return 'default'

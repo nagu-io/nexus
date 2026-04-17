@@ -120,7 +120,7 @@ export default function BuildScreen({ initialStatus = null, desktopInfo = null }
       value: flowLabel,
       detail: `local ${status?.route_stats?.local ?? 0} · repo ${status?.route_stats?.workspace ?? 0}`,
       icon: Workflow,
-      tone: 'text-[var(--accent)]',
+      tone: 'text-[var(--text-strong)]',
     },
     {
       label: 'Trust Layer',
@@ -134,7 +134,7 @@ export default function BuildScreen({ initialStatus = null, desktopInfo = null }
       value: status?.hive ? `${status.hive.trusted_nodes}/${status.hive.total_nodes}` : '--',
       detail: status?.hive?.strategy || 'parallel search',
       icon: Sparkles,
-      tone: 'text-[var(--accent-2)]',
+      tone: 'text-[var(--text-strong)]',
     },
     {
       label: 'Trace',
@@ -211,93 +211,73 @@ export default function BuildScreen({ initialStatus = null, desktopInfo = null }
           </aside>
 
           <main className="relative flex min-h-0 flex-col bg-transparent">
-            <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-[rgba(0,240,255,0.03)] via-transparent to-[rgba(191,0,255,0.035)]" />
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[rgba(255,255,255,0.02)] to-transparent" />
 
-            <header className="relative border-b border-[var(--border)] px-4 py-4 md:px-5">
-              <div className="flex flex-col gap-4">
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {statusChips.map(chip => (
-                        <span key={chip} className="meta-pill mono text-[11px] font-semibold tracking-wider">
-                          {chip}
-                        </span>
-                      ))}
-                      {workspaceLabel && (
-                        <span className="meta-pill mono text-[11px]">{shortPath(workspaceLabel, 44)}</span>
-                      )}
-                    </div>
-
-                    <h1 className="mt-4 font-display text-3xl font-semibold tracking-[-0.04em] text-[var(--text-strong)]">
-                      Mission Control
-                    </h1>
-                    <p className="mt-3 max-w-3xl text-sm leading-7 text-[var(--text-soft)]">
-                      Route prompts, inspect the repo, watch runtime decisions, and pivot into Hive without leaving the desktop shell.
-                    </p>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() => setShowActivity(value => !value)}
-                      className={`meta-pill interactive mono text-[11px] font-semibold tracking-wider ${
-                        showActivity
-                          ? 'border-[rgba(0,240,255,0.4)] text-[var(--text-strong)] shadow-[0_0_15px_rgba(0,240,255,0.15)] bg-[rgba(0,240,255,0.05)]'
-                          : ''
-                      }`}
-                    >
-                      <PanelBottom size={12} />
-                      {showActivity ? 'hide activity' : 'show activity'}
-                    </button>
-                    <button
-                      onClick={() => setProviderSettingsOpen(true)}
-                      className="meta-pill interactive mono text-[11px] font-semibold tracking-wider"
-                    >
-                      <KeyRound size={12} />
-                      OpenRouter
-                    </button>
-                    <button
-                      onClick={() => {
-                        void loadStatus({ quiet: false })
-                        void loadOverview({ quiet: false })
-                      }}
-                      className="meta-pill interactive mono text-[11px] font-semibold tracking-wider"
-                    >
-                      <RefreshCw size={12} />
-                      refresh
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
-                  {missionCards.map(card => (
-                    <MissionCard key={card.label} {...card} />
+            <header className="relative border-b border-[var(--border)] px-4 py-2.5 bg-[rgba(255,255,255,0.01)]">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  {statusChips.map(chip => (
+                    <span key={chip} className="meta-pill mono text-[10px] font-semibold tracking-wider">
+                      {chip}
+                    </span>
                   ))}
+                  {workspaceLabel && (
+                    <span className="meta-pill mono text-[10px]">{shortPath(workspaceLabel, 44)}</span>
+                  )}
                 </div>
 
-                {statusError && (
-                  <Banner tone="danger">
-                    {statusError}
-                  </Banner>
-                )}
-
-                {degradedMode && (
-                  <Banner tone="warning">
-                    Local model access is incomplete. The desktop workspace is still available, but normal chat execution will be limited until Ollama or a cloud provider is ready.
-                  </Banner>
-                )}
-
-                {!statusError && overviewError && (
-                  <Banner tone="info">
-                    {overviewError}
-                  </Banner>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => setShowActivity(value => !value)}
+                    className={`meta-pill interactive mono text-[10px] font-semibold tracking-wider ${
+                      showActivity
+                        ? 'border-[rgba(255,255,255,0.2)] text-[var(--text-strong)] shadow-[0_0_15px_rgba(255,255,255,0.06)] bg-[rgba(255,255,255,0.06)]'
+                        : ''
+                    }`}
+                  >
+                    <PanelBottom size={11} />
+                    {showActivity ? 'hide activity' : 'show activity'}
+                  </button>
+                  <button
+                    onClick={() => setProviderSettingsOpen(true)}
+                    className="meta-pill interactive mono text-[10px] font-semibold tracking-wider"
+                  >
+                    <KeyRound size={11} />
+                    OpenRouter
+                  </button>
+                  <button
+                    onClick={() => {
+                      void loadStatus({ quiet: false })
+                      void loadOverview({ quiet: false })
+                    }}
+                    className="meta-pill interactive mono text-[10px] font-semibold tracking-wider"
+                  >
+                    <RefreshCw size={11} />
+                    refresh
+                  </button>
+                </div>
               </div>
+
+              {(statusError || degradedMode || overviewError) && (
+                <div className="mt-2.5 flex flex-col gap-2">
+                  {statusError && <Banner tone="danger">{statusError}</Banner>}
+                  {degradedMode && (
+                    <Banner tone="warning">
+                      Local model access is incomplete. Normal chat execution will be limited.
+                    </Banner>
+                  )}
+                  {!statusError && overviewError && (
+                    <Banner tone="info">{overviewError}</Banner>
+                  )}
+                </div>
+              )}
             </header>
 
             <div className="relative flex min-h-0 flex-1 flex-col">
               <div className="min-h-0 flex-1 px-4 py-4 md:px-5">
                 <div className="h-full overflow-hidden rounded-[20px] panel-surface">
                   <Chat
+                    key={workspaceRoot || 'global'}
                     apiUrl={API_URL}
                     events={events}
                     workspaceRoot={workspaceRoot}
@@ -369,7 +349,7 @@ function SidebarTab({ active, icon: Icon, label, onClick }) {
       onClick={onClick}
       className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] mono transition-colors ${
         active
-          ? 'bg-gradient-to-r from-[rgba(0,240,255,0.15)] to-[rgba(191,0,255,0.15)] text-[var(--text-strong)] border border-[rgba(255,255,255,0.1)]'
+          ? 'bg-[rgba(255,255,255,0.1)] text-[var(--text-strong)] border border-[rgba(255,255,255,0.15)] shadow-[0_0_10px_rgba(255,255,255,0.02)]'
           : 'text-[var(--text-soft)] hover:bg-[rgba(255,255,255,0.05)] hover:text-[var(--text)] border border-transparent'
       }`}
     >
@@ -398,7 +378,7 @@ function MissionCard({ label, value, detail, icon: Icon, tone }) {
 
 function Banner({ children, tone = 'info' }) {
   const tones = {
-    info: 'border-[rgba(0,240,255,0.18)] bg-[rgba(0,240,255,0.06)] text-[var(--text)]',
+    info: 'border-[rgba(255,255,255,0.12)] bg-[rgba(255,255,255,0.04)] text-[var(--text)]',
     warning: 'border-[rgba(240,202,114,0.2)] bg-[rgba(240,202,114,0.08)] text-[var(--warning)]',
     danger: 'border-[rgba(255,143,136,0.22)] bg-[rgba(255,143,136,0.08)] text-[var(--danger)]',
   }

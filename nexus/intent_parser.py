@@ -45,6 +45,18 @@ class IntentParser:
         ranked_agents = sorted(required_agents, key=lambda name: scores.get(name, 0), reverse=True)
         primary_intent = ranked_agents[0]
 
+        # In workspace/project mode, action-oriented tasks MUST route to coding
+        # because only the coding agent can produce file tool actions.
+        if project_context and project_context.get("enabled"):
+            action_verbs = ("fix", "build", "create", "implement", "debug", "refactor",
+                            "inspect", "update", "add", "remove", "delete", "edit",
+                            "write", "generate", "scaffold", "setup", "install",
+                            "migrate", "deploy", "test")
+            if any(verb in lowered for verb in action_verbs):
+                primary_intent = "coding"
+                if "coding" not in ranked_agents:
+                    ranked_agents.insert(0, "coding")
+
         complexity = self._classify_complexity(goal)
         constraints = self._extract_constraints(lowered, project_context=project_context)
         deliverables = self._extract_deliverables(ranked_agents)

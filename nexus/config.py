@@ -5,7 +5,7 @@ NEXUS configuration — loads from .env and provides typed config object.
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 ENV_FILE_PATH = Path(os.getenv("NEXUS_ENV_PATH", ".env")).expanduser()
 load_dotenv(dotenv_path=ENV_FILE_PATH if ENV_FILE_PATH.exists() else None)
@@ -63,8 +63,7 @@ class NexusConfig(BaseModel):
     hive_max_nodes: int = int(os.getenv("NEXUS_HIVE_MAX_NODES", "8"))
     hive_canary_fraction: float = float(os.getenv("NEXUS_HIVE_CANARY_FRACTION", "0.25"))
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 config = NexusConfig()

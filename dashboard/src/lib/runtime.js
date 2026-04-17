@@ -9,16 +9,47 @@ export const API_URL =
 export const WS_URL = `${API_URL.replace('http', 'ws')}/ws`
 
 export function desktopAvailable() {
-  return Boolean(window?.nexusDesktop)
+  return Boolean(window?.__TAURI__)
+}
+
+/** Tauri v1 exposes window.__TAURI__.tauri and window.__TAURI__.window */
+function getTauriWindow() {
+  try {
+    return window?.__TAURI__?.window
+  } catch {
+    return null
+  }
+}
+
+export function getWindowControls() {
+  const tw = getTauriWindow()
+  if (!tw) return null
+
+  const appWindow = tw.appWindow || tw.getCurrent?.()
+  if (!appWindow) return null
+
+  return {
+    minimize: () => appWindow.minimize(),
+    toggleMaximize: () => appWindow.toggleMaximize(),
+    close: () => appWindow.close(),
+  }
 }
 
 export async function getDesktopInfo() {
-  if (!desktopAvailable() || typeof window.nexusDesktop.desktopInfo !== 'function') {
+  if (!desktopAvailable()) {
     return null
   }
 
   try {
-    return await window.nexusDesktop.desktopInfo()
+    const tw = getTauriWindow()
+    const appWindow = tw?.appWindow || tw?.getCurrent?.()
+    const version = window?.__TAURI__?.app?.getVersion
+      ? await window.__TAURI__.app.getVersion()
+      : null
+    return {
+      version: version || '0.2.0',
+      label: appWindow?.label || 'main',
+    }
   } catch {
     return null
   }
@@ -28,9 +59,9 @@ export async function openExternal(url) {
   const target = String(url || '').trim()
   if (!target) return
 
-  if (desktopAvailable() && typeof window.nexusDesktop.openExternal === 'function') {
+  if (desktopAvailable() && window?.__TAURI__?.shell?.open) {
     try {
-      await window.nexusDesktop.openExternal(target)
+      await window.__TAURI__.shell.open(target)
       return
     } catch {
       // Fall back to the browser pathway below.
@@ -59,6 +90,8 @@ export async function fetchJson(path, options = {}) {
 }
 
 export function configuredModelAvailable(status) {
+  if (status?.local_backend === 'adapter') return true
+
   const models = Array.isArray(status?.ollama_models) ? status.ollama_models : []
   if (!status?.ollama || models.length === 0) {
     return false
@@ -81,6 +114,8 @@ export function configuredModelAvailable(status) {
 }
 
 export function hasOperationalModelPath(status) {
+  if (status?.local_backend === 'adapter') return true
+
   return Boolean(
     configuredModelAvailable(status) ||
       (status?.cloud_provider && status.cloud_provider !== 'none'),

@@ -1,4 +1,5 @@
 import React from 'react'
+import { Sparkles, Activity } from 'lucide-react'
 
 const fmtPercent = value => (
   value === null || value === undefined ? '--' : `${Math.round(value * 100)}%`
@@ -9,48 +10,61 @@ export default function SkillPatterns({ overview }) {
   const metrics = overview?.pattern_metrics || {}
 
   return (
-    <div className="bg-[#0a1628] border border-[#1e3a5f] rounded-lg p-4">
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <p className="mono text-cyan-400 text-xs uppercase tracking-widest">Skill Memory</p>
-          <p className="text-xs text-[#4a7fa5] mt-1">
-            {metrics.total_patterns ?? 0} patterns • avg success {fmtPercent(metrics.avg_success_rate)}
+    <div className="panel-surface p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--accent-2-soft)] text-[var(--accent-2)] shadow-[0_0_15px_rgba(191,0,255,0.12)]">
+            <Sparkles size={16} />
+          </div>
+          <div>
+            <p className="section-label">Skill Memory</p>
+            <p className="mt-1 text-[11px] leading-5 text-[var(--text-soft)]">
+              {metrics.total_patterns ?? 0} active skills
+            </p>
+          </div>
+        </div>
+        <div className="text-right">
+          <span className="meta-pill mono text-[11px] text-[var(--success)]">
+            avg {fmtPercent(metrics.avg_success_rate)}
+          </span>
+          <p className="mt-1 text-[10px] text-[var(--text-soft)]">
+            retry {metrics.avg_retries !== undefined ? metrics.avg_retries.toFixed(1) : '--'} x/run
           </p>
         </div>
-        <span className="mono text-[11px] text-[#4a7fa5]">
-          avg retry {metrics.avg_retries !== undefined ? metrics.avg_retries.toFixed(1) : '--'}
-        </span>
       </div>
 
-      <div className="space-y-3">
+      <div className="mt-4 space-y-3">
         {patterns.length === 0 && (
-          <p className="text-sm text-[#4a7fa5] leading-relaxed">
-            Successful workflows will accumulate here and rank future plans automatically.
-          </p>
+          <div className="panel-muted px-4 py-4 text-center text-sm text-[var(--text-soft)]">
+            Successful workflows will accumulate here automatically and guide future plans.
+          </div>
         )}
 
         {patterns.map(pattern => (
-          <div key={pattern.signature} className="rounded-lg border border-[#18324f] bg-[#0b1a2f] p-3">
+          <div key={pattern.signature} className="panel-muted px-3 py-3 hover:border-[var(--accent-soft)] transition-colors">
             <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="mono text-xs text-cyan-300 uppercase">{pattern.primary_intent}</p>
-                <p className="text-sm text-[#d7e7f7] mt-1">
+              <div className="min-w-0">
+                <p className="mono text-[10px] text-[var(--accent)] uppercase tracking-widest">{pattern.primary_intent}</p>
+                <p className="mt-1.5 truncate text-sm font-medium text-[var(--text-strong)]">
                   {(pattern.examples && pattern.examples[0]) || pattern.signature}
                 </p>
               </div>
-              <span className="mono text-[11px] text-green-400">
+              <span className="meta-pill mono text-[10px] text-[var(--success)]">
                 {fmtPercent(pattern.success_rate)}
               </span>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 mt-3 text-[11px] mono text-[#7ea6c7]">
-              <span>runs {pattern.total_runs}</span>
+            <div className="mt-3 flex flex-wrap gap-2 text-[10px] mono text-[var(--text-muted)]">
+              <span className="flex items-center gap-1"><Activity size={10} /> {pattern.total_runs} runs</span>
               <span>retry {pattern.avg_retries.toFixed(1)}</span>
             </div>
 
-            <p className="text-xs text-[#4a7fa5] mt-3 leading-relaxed">
-              best path: {(pattern.best_agent_sequence || []).join(' -> ') || 'not learned yet'}
-            </p>
+            <div className="mt-3 rounded-[12px] border border-[var(--border)] bg-[rgba(255,255,255,0.02)] px-3 py-2.5">
+              <p className="text-[10px] text-[var(--text-soft)] uppercase tracking-wider mb-1">Learned Sequence</p>
+              <p className="text-[11px] font-mono text-[var(--accent-2)] break-words leading-relaxed">
+                {(pattern.best_agent_sequence || []).join(' → ') || 'awaiting structural discovery'}
+              </p>
+            </div>
           </div>
         ))}
       </div>

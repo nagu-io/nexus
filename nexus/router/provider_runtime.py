@@ -192,18 +192,30 @@ class _AdapterRuntime:
             if self._model is not None and self._tokenizer is not None and self._loaded_dir == resolved_dir:
                 return
 
-            from unsloth import FastLanguageModel
+            import json
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+            from peft import PeftModel
 
-            model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name=resolved_dir,
-                max_seq_length=512,
-                dtype=None,
-                load_in_4bit=True,
+            config_path = Path(resolved_dir) / "adapter_config.json"
+            if not config_path.exists():
+                raise FileNotFoundError(f"Adapter config not found in {resolved_dir}")
+            
+            with open(config_path) as f:
+                adapter_cfg = json.load(f)
+            base_model = adapter_cfg["base_model_name_or_path"]
+
+            base = AutoModelForCausalLM.from_pretrained(
+                base_model,
+                device_map="auto",
+                torch_dtype=torch.float16,
             )
-            FastLanguageModel.for_inference(model)
+            model = PeftModel.from_pretrained(base, resolved_dir)
+            tokenizer = AutoTokenizer.from_pretrained(resolved_dir)
+            
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
-
+                
             self._model = model
             self._tokenizer = tokenizer
             self._loaded_dir = resolved_dir
@@ -233,7 +245,7 @@ class _AdapterRuntime:
             with torch.no_grad():
                 outputs = self._model.generate(
                     **inputs,
-                    max_new_tokens=220,
+                    max_new_tokens=3000,
                     do_sample=False,
                     use_cache=True,
                     pad_token_id=self._tokenizer.eos_token_id,

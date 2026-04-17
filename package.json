@@ -1,10 +1,17 @@
 {
-  "name": "express-login-system",
-  "version": "1.0.0",
+  "name": "nexus",
+  "version": "0.2.0",
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "dev": "node backend/server.js"
+    "dev": "node backend/server.js",
+    "dashboard:install": "npm --prefix dashboard install",
+    "dashboard:dev": "npm --prefix dashboard run dev",
+    "dashboard:build": "npm --prefix dashboard run build",
+    "dashboard:preview": "npm --prefix dashboard run preview",
+    "desktop:install": "npm --prefix desktop install",
+    "desktop:dev": "npm --prefix desktop run dev",
+    "desktop:dist": "npm --prefix desktop run dist"
   },
   "dependencies": {
     "cors": "^2.8.5",

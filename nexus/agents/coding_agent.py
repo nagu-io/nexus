@@ -578,7 +578,19 @@ Run Instructions:
         task_type = self._task_type_from_prompt(task)
         project_state = memory.get("workspace.project_state") or {}
         scaffold_text = await self._generate_autonomous_artifacts(task, memory, task_type=task_type)
+
+        console.print(f"[dim]Local model raw output ({len(scaffold_text)} chars):[/dim]")
+        console.print(f"[dim]{scaffold_text[:500]}[/dim]")
+
         artifacts = self._artifact_materializer.extract(scaffold_text)
+
+        if not artifacts:
+            console.print("[yellow]No code blocks extracted from local model output. Using fallback scaffold.[/yellow]")
+            scaffold_text = self._build_fallback_scaffold(task, workspace_root)
+            artifacts = self._artifact_materializer.extract(scaffold_text)
+
+        console.print(f"[green]Extracted {len(artifacts)} file artifact(s) for workspace[/green]")
+
         actions = self._artifacts_to_tool_calls(artifacts, workspace_root)
         actions.extend(
             self._validation_commands(
@@ -598,6 +610,146 @@ Run Instructions:
             "tool_results": [],
             "task_type": task_type,
         }
+
+    def _build_fallback_scaffold(self, task: str, workspace_root: Path) -> str:
+        """Generate a minimal but real project scaffold when the local model fails to produce code blocks."""
+        task_lower = task.lower()
+
+        # Detect what the user wants
+        wants_auth = any(w in task_lower for w in ("auth", "login", "signup", "sign up", "register"))
+        wants_api = any(w in task_lower for w in ("api", "endpoint", "route", "backend", "server", "express"))
+        wants_frontend = any(w in task_lower for w in ("frontend", "ui", "page", "form", "react", "html"))
+
+        if wants_auth or (wants_api and wants_frontend):
+            return self._deterministic_scaffold(task) or self._generic_node_scaffold(task, workspace_root)
+        if wants_api:
+            return self._generic_node_scaffold(task, workspace_root)
+        if wants_frontend:
+            return self._generic_frontend_scaffold(task, workspace_root)
+        return self._generic_node_scaffold(task, workspace_root)
+
+    def _generic_node_scaffold(self, task: str, workspace_root: Path) -> str:
+        """A minimal Express starter that the materializer can extract."""
+        return f"""Architecture Note:
+- Simple Express server that handles the requested task.
+- Created as a greenfield project in {workspace_root.name}.
+
+`package.json`
+```json
+{{
+  "name": "{workspace_root.name}",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {{
+    "dev": "node server.js"
+  }},
+  "dependencies": {{
+    "express": "^4.19.2"
+  }}
+}}
+```
+
+`server.js`
+```javascript
+const express = require("express");
+const path = require("path");
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
+
+app.get("/api/health", (_req, res) => {{
+  res.json({{ ok: true, project: "{workspace_root.name}" }});
+}});
+
+app.listen(port, () => {{
+  console.log(`Server running at http://localhost:${{port}}`);
+}});
+```
+
+`public/index.html`
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{workspace_root.name}</title>
+  <style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{ font-family: system-ui, sans-serif; background: #0a0a0a; color: #e5e5e5; min-height: 100vh; display: grid; place-items: center; }}
+    .container {{ text-align: center; padding: 2rem; }}
+    h1 {{ font-size: 2rem; margin-bottom: 1rem; background: linear-gradient(135deg, #00f0ff, #bf00ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+    p {{ color: #888; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>{workspace_root.name}</h1>
+    <p>Project created by NEXUS. Edit server.js to build your API.</p>
+  </div>
+</body>
+</html>
+```
+
+Run: `npm install && npm run dev`
+"""
+
+    def _generic_frontend_scaffold(self, task: str, workspace_root: Path) -> str:
+        """A minimal HTML/CSS/JS starter scaffold."""
+        return f"""Architecture Note:
+- Static frontend project with HTML, CSS, and JavaScript.
+- No build step required, just open index.html.
+
+`index.html`
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{workspace_root.name}</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main id="app">
+    <h1>{workspace_root.name}</h1>
+    <p>Frontend project scaffolded by NEXUS.</p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
+```
+
+`styles.css`
+```css
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #0a0a0a;
+  color: #e5e5e5;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}}
+h1 {{
+  font-size: 2.5rem;
+  background: linear-gradient(135deg, #00f0ff, #bf00ff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 1rem;
+}}
+```
+
+`app.js`
+```javascript
+document.addEventListener("DOMContentLoaded", () => {{
+  console.log("{workspace_root.name} loaded");
+}});
+```
+"""
 
     async def _generate_autonomous_artifacts(self, task: str, memory, *, task_type: str) -> str:
         """Produce file-block output that can be materialized into a workspace."""
@@ -624,10 +776,19 @@ Run Instructions:
                 f"Allowed existing paths: {', '.join(allowed_paths[:12])}\n"
                 "Never invent placeholder paths like relative/path.ext or labels like Updated math_utils.py.\n"
             )
+        empty_guidance = ""
+        if "No file previews were available" in existing_files:
+            empty_guidance = (
+                "The workspace is completely empty. You must generate all foundational files from scratch.\n"
+                "DO NOT assume the existence of any existing architecture, frameworks, or code unless specified by the user.\n"
+                "Treat this as a brand new greenfield project.\n"
+            )
+
         prompt = (
             "You are generating or repairing files inside an existing coding workspace.\n"
             "Treat the provided workspace file previews as the source of truth for the current codebase.\n"
             "Only modify files that are necessary for the task.\n"
+            f"{empty_guidance}"
             f"{repair_guidance}"
             f"{path_guidance}"
             "Return only:\n"
@@ -638,7 +799,14 @@ Run Instructions:
             "Do not include placeholders, ellipses, or omitted sections.\n\n"
             f"Workspace root:\n{workspace_root}\n\n"
             f"Existing workspace files:\n{existing_files}\n\n"
-            f"{task}"
+            f"Task: {task}\n\n"
+            "You MUST output at least one file. Output your response EXACTLY starting with:\n"
+            "Architecture Note:\n"
+            "- <your note here>\n\n"
+            "`<filename>`\n"
+            "```<language>\n"
+            "<code here>\n"
+            "```"
         )
         return await self._call_local(prompt)
 
