@@ -51,7 +51,8 @@ class IntentParser:
             action_verbs = ("fix", "build", "create", "implement", "debug", "refactor",
                             "inspect", "update", "add", "remove", "delete", "edit",
                             "write", "generate", "scaffold", "setup", "install",
-                            "migrate", "deploy", "test")
+                            "migrate", "deploy", "test", "analyze", "explain", "review",
+                            "explore", "evaluate", "read", "summarize")
             if any(verb in lowered for verb in action_verbs):
                 primary_intent = "coding"
                 if "coding" not in ranked_agents:
