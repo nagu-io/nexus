@@ -72,7 +72,7 @@ export default function ModelControlCenter({ apiUrl }) {
         launchModel: data.runtime?.launch_model || 'phi3:mini',
       })
     } catch (loadError) {
-      setError(loadError.message || 'Could not load model control center')
+      setError(loadError.message || 'Could not load')
     } finally {
       setLoading(false)
     }
@@ -93,9 +93,9 @@ export default function ModelControlCenter({ apiUrl }) {
         }),
       })
       setOverview({ ...EMPTY_OVERVIEW, ...data.overview })
-      setMessage(data.summary || 'Local runtime settings saved.')
+      setMessage(data.summary || 'Saved')
     } catch (saveError) {
-      setError(saveError.message || 'Could not save local runtime settings')
+      setError(saveError.message || 'Failed to save')
     } finally {
       setSaving(false)
     }
@@ -112,8 +112,8 @@ export default function ModelControlCenter({ apiUrl }) {
         body: JSON.stringify({ bits: 4 }),
       })
       setOverview({ ...EMPTY_OVERVIEW, ...data.overview })
-      const mode = data.artifact?.source === 'mock' ? 'mock mode' : 'real pack'
-      setMessage(`CompressX finished for ${data.overview.runtime.launch_model} in ${mode}.`)
+      const mode = data.artifact?.source === 'mock' ? 'mock' : 'real'
+      setMessage(`Done (${mode})`)
     } catch (compressError) {
       setError(compressError.message || 'CompressX failed')
     } finally {
@@ -123,11 +123,8 @@ export default function ModelControlCenter({ apiUrl }) {
 
   if (loading) {
     return (
-      <div className="panel-surface flex h-full items-center justify-center p-6 text-sm text-[var(--text-soft)]">
-        <div className="flex items-center gap-3">
-          <Loader2 size={16} className="animate-spin text-[var(--accent)]" />
-          Loading model control center…
-        </div>
+      <div className="flex h-full items-center justify-center p-6 text-sm text-[var(--text-soft)]">
+        <Loader2 size={16} className="animate-spin text-[var(--accent)]" />
       </div>
     )
   }
@@ -136,50 +133,40 @@ export default function ModelControlCenter({ apiUrl }) {
     {
       label: 'Backend',
       value: overview.runtime.backend,
-      detail: overview.runtime.single_app_mode ? 'single-app route' : 'external runtime route',
       icon: Bot,
     },
     {
       label: 'Launch Model',
       value: overview.runtime.launch_model,
-      detail: overview.runtime.resolved_launch_model || 'launch alias',
       icon: Sparkles,
     },
     {
       label: 'Cloud',
       value: overview.runtime.cloud_fallback,
-      detail: overview.runtime.cloud_fallback === 'none' ? 'offline only' : 'fallback ready',
       icon: Layers3,
     },
   ]
 
   return (
-    <div className="space-y-3">
-      <div className="panel-surface p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="section-label">Model Control</p>
-            <p className="mt-2 text-sm leading-6 text-[var(--text-soft)]">
-              Run the local adapter, point NEXUS at the right artifacts, and track whether the desktop app can realistically ship as one installer.
-            </p>
-          </div>
-          <button onClick={() => void loadOverview()} className="meta-pill interactive mono text-[11px]">
+    <div className="space-y-4 pb-4">
+      <div className="px-3">
+        <div className="flex items-center justify-between pb-2">
+          <p className="section-label">Model Status</p>
+          <button onClick={() => void loadOverview()} className="text-[var(--text-soft)] hover:text-[var(--text)]">
             <RefreshCw size={12} />
-            refresh
           </button>
         </div>
-
-        <div className="mt-4 space-y-2">
+        <div className="space-y-1.5">
           {runtimeCards.map(card => {
             const Icon = card.icon
             return (
-              <div key={card.label} className="panel-muted px-3 py-2.5 flex items-center gap-3">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[rgba(255,255,255,0.04)] text-[var(--text-soft)]">
-                  <Icon size={14} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="section-label text-[10px]">{card.label}</p>
-                  <p className="mt-0.5 text-sm font-semibold tracking-[-0.03em] text-[var(--text-strong)] truncate">{card.value}</p>
+              <div key={card.label} className="panel-muted px-3 py-2 flex items-center gap-3">
+                <Icon size={12} className="text-[var(--text-soft)] shrink-0" />
+                <div className="min-w-0 flex-1 flex justify-between items-center">
+                  <span className="text-[10px] text-[var(--text-soft)]">{card.label}</span>
+                  <span className="text-xs font-semibold tracking-[-0.03em] text-[var(--text-strong)] truncate">
+                    {card.value}
+                  </span>
                 </div>
               </div>
             )
@@ -187,24 +174,22 @@ export default function ModelControlCenter({ apiUrl }) {
         </div>
       </div>
 
-      <div className="panel-surface p-4">
-        <div className="flex items-center justify-between gap-3">
-          <p className="section-label">Runtime Switchboard</p>
-          <span className="meta-pill mono text-[11px]">
-            {overview.runtime.adapter_ready ? 'adapter ready' : 'adapter missing'}
-          </span>
+      <div className="border-t border-[var(--border)] pt-4 px-3">
+        <div className="flex items-center justify-between pb-2">
+          <p className="section-label">Switchboard</p>
+          <span className={`h-1.5 w-1.5 rounded-full ${overview.runtime.adapter_ready ? 'bg-[var(--success)]' : 'bg-[var(--danger)]'}`} />
         </div>
 
-        <div className="mt-4 space-y-4">
-          <div className="flex flex-wrap gap-1.5">
+        <div className="space-y-3">
+          <div className="flex gap-1">
             {['ollama', 'adapter'].map(option => (
               <button
                 key={option}
                 onClick={() => setForm(prev => ({ ...prev, backend: option }))}
-                className={`meta-pill interactive mono text-[11px] ${
+                className={`flex-1 rounded-full py-1 text-[10px] mono uppercase tracking-wider border transition-colors ${
                   form.backend === option
-                    ? 'border-[rgba(0,240,255,0.35)] bg-[rgba(0,240,255,0.06)] text-[var(--accent)]'
-                    : ''
+                    ? 'border-[var(--accent)] bg-[rgba(0,240,255,0.06)] text-[var(--accent)]'
+                    : 'border-transparent text-[var(--text-soft)] hover:bg-[rgba(255,255,255,0.03)]'
                 }`}
               >
                 {option}
@@ -213,25 +198,25 @@ export default function ModelControlCenter({ apiUrl }) {
           </div>
 
           <label className="block">
-            <span className="mb-2 block text-sm text-[var(--text-soft)]">Launch model alias</span>
+            <span className="mb-1.5 block text-[10px] text-[var(--text-soft)] uppercase tracking-wider">Launch Alias</span>
             <input
               type="text"
               value={form.launchModel}
               onChange={event => setForm(prev => ({ ...prev, launchModel: event.target.value }))}
               placeholder="phi3:mini"
-              className="w-full rounded-2xl border border-[var(--border)] bg-[rgba(17,19,24,0.8)] px-4 py-3 text-sm text-[var(--text)] outline-none transition-colors focus:border-[var(--accent)]"
+              className="w-full rounded-xl border border-[var(--border)] bg-[rgba(17,19,24,0.8)] px-3 py-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
             />
           </label>
 
           <label className="block">
-            <span className="mb-2 block text-sm text-[var(--text-soft)]">Adapter directory</span>
-            <div className="flex gap-2">
+            <span className="mb-1.5 block text-[10px] text-[var(--text-soft)] uppercase tracking-wider">Adapter Path</span>
+            <div className="flex gap-1.5">
               <input
                 type="text"
                 value={form.localModelDir}
                 onChange={event => setForm(prev => ({ ...prev, localModelDir: event.target.value }))}
                 placeholder="lora_model"
-                className="min-w-0 flex-1 rounded-2xl border border-[var(--border)] bg-[rgba(17,19,24,0.8)] px-4 py-3 text-sm text-[var(--text)] outline-none transition-colors focus:border-[var(--accent)]"
+                className="min-w-0 flex-1 rounded-xl border border-[var(--border)] bg-[rgba(17,19,24,0.8)] px-3 py-2 text-xs text-[var(--text)] outline-none focus:border-[var(--accent)]"
               />
               {window?.nexusDesktop?.chooseDirectory && (
                 <button
@@ -241,139 +226,98 @@ export default function ModelControlCenter({ apiUrl }) {
                       setForm(prev => ({ ...prev, localModelDir: picked }))
                     }
                   }}
-                  className="meta-pill interactive shrink-0 mono text-[11px]"
+                  className="rounded-xl bg-[rgba(255,255,255,0.04)] px-2.5 text-[var(--text-soft)] hover:text-[var(--text)] border border-[var(--border)] hover:bg-[rgba(255,255,255,0.08)]"
                 >
                   <FolderOpen size={12} />
-                  choose
                 </button>
               )}
             </div>
           </label>
 
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm leading-6 text-[var(--text-soft)]">
-              Adapter mode keeps the desktop experience self-contained. Ollama mode stays compatible with larger local models outside the app.
-            </p>
-            <button
-              onClick={() => void saveRuntime()}
-              disabled={saving || !form.launchModel.trim() || !form.localModelDir.trim()}
-              className="inline-flex items-center gap-2 rounded-full bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[#201913] transition-transform hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-              save runtime
-            </button>
-          </div>
+          <button
+            onClick={() => void saveRuntime()}
+            disabled={saving || !form.launchModel.trim() || !form.localModelDir.trim()}
+            className="w-full inline-flex justify-center items-center gap-2 rounded-xl bg-[var(--text-strong)] py-2 text-xs font-bold text-[#07090f] transition-all hover:bg-[var(--accent)] hover:shadow-[0_0_15px_rgba(0,240,255,0.3)] disabled:opacity-40"
+          >
+            {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+            Save
+          </button>
         </div>
       </div>
 
-      <div className="panel-surface p-4">
-        <div className="flex items-center justify-between gap-3">
-          <p className="section-label">Artifacts</p>
-          <span className="meta-pill mono text-[11px]">{overview.artifacts.length} tracked</span>
-        </div>
-        <div className="mt-3 space-y-2">
-          {overview.artifacts.map(item => (
-            <ArtifactRow key={item.id} item={item} />
-          ))}
-        </div>
-      </div>
-
-      <div className="panel-surface p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="section-label">CompressX</p>
-            <p className="mt-2 text-sm leading-6 text-[var(--text-soft)]">
-              Create a launch pack for the current local model alias. Real GPTQ output counts toward packaging estimates. Mock output does not.
-            </p>
+      {overview.artifacts.length > 0 && (
+        <div className="border-t border-[var(--border)] pt-4 px-3">
+          <p className="section-label pb-2">Artifacts ({overview.artifacts.length})</p>
+          <div className="space-y-1.5">
+            {overview.artifacts.map(item => (
+              <ArtifactRow key={item.id} item={item} />
+            ))}
           </div>
+        </div>
+      )}
+
+      <div className="border-t border-[var(--border)] pt-4 px-3">
+        <div className="flex items-center justify-between pb-2">
+          <p className="section-label">CompressX</p>
           <button
             onClick={() => void runCompression()}
             disabled={compressing}
-            className="inline-flex items-center gap-2 rounded-full bg-[var(--text-strong)] px-4 py-2 text-sm font-bold text-[#07090f] transition-all hover:bg-[var(--accent)] hover:shadow-[0_0_18px_rgba(0,240,255,0.35)] disabled:cursor-not-allowed disabled:opacity-40"
+            className="text-[var(--text-strong)] hover:text-[var(--accent)] disabled:opacity-40"
           >
-            {compressing ? <Loader2 size={16} className="animate-spin" /> : <Package2 size={16} />}
-            {compressing ? 'compressing' : 'compress launch pack'}
+            {compressing ? <Loader2 size={12} className="animate-spin" /> : <Package2 size={12} />}
           </button>
         </div>
 
-        <div className="mt-4 space-y-2">
+        <div className="space-y-1.5">
           {overview.compressed_models.length === 0 && (
-            <div className="panel-muted px-4 py-4 text-sm text-[var(--text-soft)]">
-              No launch packs yet. Run CompressX to create the first packaging artifact.
-            </div>
+            <p className="text-xs text-[var(--text-soft)]">No launch packs yet.</p>
           )}
-
           {overview.compressed_models.map(item => (
-            <div key={`${item.name}-${item.path}`} className="panel-muted px-3 py-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-[var(--text-strong)]">{item.name}</p>
-                  <p className="mt-1 break-all text-xs leading-5 text-[var(--text-soft)]">{item.path}</p>
-                </div>
-                <span className={`meta-pill mono text-[11px] ${item.real_measurement ? 'text-[var(--success)]' : 'text-[var(--warning)]'}`}>
-                  {item.real_measurement ? 'real' : item.source}
-                </span>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2 text-[11px] mono text-[var(--text-soft)]">
-                <span>{item.bits}-bit</span>
-                <span>{item.size_mb} MB</span>
-                <span>{item.ratio ? `${Number(item.ratio).toFixed(1)}x` : '--'}</span>
-              </div>
+            <div key={`${item.name}-${item.path}`} className="panel-muted px-3 py-2 flex justify-between items-center">
+              <span className="text-xs text-[var(--text-strong)] truncate mr-2">{item.name}</span>
+              <span className="text-[10px] mono text-[var(--text-soft)] whitespace-nowrap">{item.size_mb} MB</span>
             </div>
           ))}
         </div>
       </div>
 
-      <div className="panel-surface p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="section-label">Single-App Budget</p>
-            <p className="mt-2 text-sm leading-6 text-[var(--text-soft)]">
-              This is the honest “can the impossible ship?” readout for the desktop app.
-            </p>
-          </div>
-          <div className={`meta-pill mono text-[11px] ${readinessTone(overview.packaging.readiness)}`}>
-            <Gauge size={12} />
-            {overview.packaging.readiness}
+      <div className="border-t border-[var(--border)] pt-4 px-3">
+        <div className="flex items-center justify-between pb-2">
+          <p className="section-label">Budget constraints</p>
+          <div className={`flex items-center gap-1 ${readinessTone(overview.packaging.readiness)}`}>
+            <Gauge size={10} />
+            <span className="text-[10px] uppercase tracking-wider">{overview.packaging.readiness}</span>
           </div>
         </div>
 
-        <div className="mt-4 grid gap-2 md:grid-cols-4">
-          <BudgetCard label="Budget" value={`${overview.packaging.budget_mb} MB`} />
-          <BudgetCard label="Reserve" value={`${overview.packaging.runtime_reserve_mb} MB`} />
-          <BudgetCard label="Adapter" value={`${overview.packaging.adapter_pack_mb} MB`} />
-          <BudgetCard label="Launch Pack" value={overview.packaging.selected_launch_pack_mb !== null ? `${overview.packaging.selected_launch_pack_mb} MB` : '--'} />
+        <div className="grid grid-cols-2 gap-1.5">
+          <BudgetCard label="Cap" value={overview.packaging.budget_mb} />
+          <BudgetCard label="Reserve" value={overview.packaging.runtime_reserve_mb} />
+          <BudgetCard label="Adapter" value={overview.packaging.adapter_pack_mb} />
+          <BudgetCard label="LLM" value={overview.packaging.selected_launch_pack_mb ?? '--'} />
         </div>
 
-        <div className="mt-4 rounded-[18px] border border-[var(--border)] bg-[rgba(255,255,255,0.03)] px-4 py-4">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-[var(--text-strong)]">Estimated total</p>
-            <span className={`meta-pill mono text-[11px] ${
-              overview.packaging.sub_gb_possible === null
-                ? 'text-[var(--text-soft)]'
-                : overview.packaging.sub_gb_possible
-                  ? 'text-[var(--success)]'
-                  : 'text-[var(--danger)]'
-            }`}>
-              {overview.packaging.estimated_total_mb !== null ? `${overview.packaging.estimated_total_mb} MB` : 'waiting'}
-            </span>
-          </div>
-          <p className="mt-3 text-sm leading-6 text-[var(--text-soft)]">{overview.packaging.message}</p>
-          {overview.packaging.selected_launch_pack_name && (
-            <p className="mt-2 text-xs leading-5 text-[var(--text-soft)]">
-              measured launch pack: {overview.packaging.selected_launch_pack_name}
-            </p>
-          )}
+        <div className="mt-2 rounded-xl flex items-center justify-between px-3 py-2 border border-[rgba(255,255,255,0.06)] bg-[rgba(255,255,255,0.02)]">
+          <span className="text-xs text-[var(--text-soft)]">Total</span>
+          <span className={`text-xs font-semibold ${
+            overview.packaging.sub_gb_possible === null
+              ? 'text-[var(--text-soft)]'
+              : overview.packaging.sub_gb_possible ? 'text-[var(--success)]' : 'text-[var(--danger)]'
+          }`}>
+            {overview.packaging.estimated_total_mb ?? '...'} MB
+          </span>
         </div>
       </div>
 
       {(error || message) && (
-        <div className={`rounded-[18px] border px-4 py-3 text-sm ${
-          error
-            ? 'border-[rgba(255,143,136,0.22)] bg-[rgba(255,143,136,0.08)] text-[var(--danger)]'
-            : 'border-[rgba(137,213,167,0.2)] bg-[rgba(137,213,167,0.08)] text-[var(--success)]'
-        }`}>
-          {error || message}
+        <div className="px-3">
+          <div className={`rounded-xl px-3 py-2 text-[11px] ${
+            error
+              ? 'bg-[rgba(255,143,136,0.08)] text-[var(--danger)] border border-[rgba(255,143,136,0.15)]'
+              : 'bg-[rgba(137,213,167,0.08)] text-[var(--success)] border border-[rgba(137,213,167,0.15)]'
+          }`}>
+            {error || message}
+          </div>
         </div>
       )}
     </div>
@@ -382,34 +326,21 @@ export default function ModelControlCenter({ apiUrl }) {
 
 function ArtifactRow({ item }) {
   return (
-    <div className="panel-muted px-3 py-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <HardDrive size={14} className="text-[var(--text-soft)]" />
-            <p className="text-sm font-semibold text-[var(--text-strong)]">{item.label}</p>
-          </div>
-          <p className="mt-2 text-xs leading-5 text-[var(--text-soft)]">{item.description}</p>
-          <p className="mt-2 break-all text-[11px] mono text-[var(--text-soft)]">{item.path}</p>
-        </div>
-        <span className={`meta-pill mono text-[11px] ${item.exists ? 'text-[var(--success)]' : 'text-[var(--warning)]'}`}>
-          {item.exists ? 'ready' : 'missing'}
-        </span>
+    <div className="panel-muted px-3 py-2 flex items-center justify-between gap-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${item.exists ? 'bg-[var(--success)]' : 'bg-[var(--warning)]'}`} />
+        <span className="text-xs text-[var(--text)] truncate">{item.label}</span>
       </div>
-      <div className="mt-3 flex flex-wrap gap-2 text-[11px] mono text-[var(--text-soft)]">
-        <span>{item.kind}</span>
-        <span>{item.size_mb} MB</span>
-        <span>{item.entry_count} files</span>
-      </div>
+      <span className="text-[10px] mono text-[var(--text-soft)] whitespace-nowrap">{item.size_mb} MB</span>
     </div>
   )
 }
 
 function BudgetCard({ label, value }) {
   return (
-    <div className="panel-muted px-3 py-3">
-      <p className="section-label text-[10px]">{label}</p>
-      <p className="mt-2 text-lg font-semibold tracking-[-0.03em] text-[var(--text-strong)]">{value}</p>
+    <div className="panel-muted px-3 py-2">
+      <p className="text-[10px] text-[var(--text-soft)] mb-0.5">{label}</p>
+      <p className="text-xs font-medium text-[var(--text-strong)]">{value}</p>
     </div>
   )
 }
