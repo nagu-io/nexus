@@ -27,6 +27,7 @@ class TrackingMindRouter(MindRouter):
         self.local_prompts: list[str] = []
         self.agent_calls: list[tuple[str, str]] = []
         self.cloud_prompts: list[str] = []
+        self.hive_calls: list[tuple[str | None, str]] = []
 
     async def _call_local(self, task: str) -> str:
         self.local_prompts.append(task)
@@ -39,6 +40,17 @@ class TrackingMindRouter(MindRouter):
     async def _call_cloud(self, task: str) -> str:
         self.cloud_prompts.append(task)
         return "cloud-response"
+
+    async def _call_hive(self, task: str, intent: str | None) -> tuple[str, dict]:
+        self.hive_calls.append((intent, task))
+        return (
+            "hive-synthesized-response",
+            {
+                "assembled_output": "hive-synthesized-response",
+                "winner": {"node_id": "forge-blr"},
+                "canary_results": [],
+            },
+        )
 
 
 class MindRouterTests(unittest.TestCase):
@@ -76,6 +88,18 @@ class MindRouterTests(unittest.TestCase):
         self.assertFalse(result["workspace_grounded"])
         self.assertEqual(router.local_prompts, [])
         self.assertEqual(router.agent_calls, [("coding", "Build a FastAPI auth service")])
+
+    def test_explicit_hive_prompt_routes_to_hive(self):
+        router = TrackingMindRouter()
+
+        with patch("nexus.reflect.reflect_score.ReflectScore", StubReflectScore):
+            result = asyncio.run(router.route_with_reflection("/hive build me a full authentication system"))
+
+        self.assertEqual(result["initial_route"], "hive")
+        self.assertEqual(result["final_route"], "hive")
+        self.assertEqual(router.hive_calls, [("coding", "/hive build me a full authentication system")])
+        self.assertEqual(result["response"], "hive-synthesized-response")
+        self.assertIsNotNone(result["hive_details"])
 
     def test_router_exposes_context_reduction_metadata_for_large_prompt(self):
         class StubReducer:

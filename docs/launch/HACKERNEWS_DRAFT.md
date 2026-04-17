@@ -1,45 +1,44 @@
 # Hacker News Draft
 
-Show HN: NEXUS - local-first AI developer OS with trust gating and RAG protection
+Show HN: NEXUS - local-first AI coding desktop with experimental Hive, bundled adapter, and trust gating
 
-I built NEXUS as a CS student from India. It is a private AI developer OS that runs locally, routes tasks across local and cloud paths, scores answers before serving them, and adds canary-based RAG protection.
+I built NEXUS as a local-first AI developer workspace that runs on your machine, edits real repos, scores answers before serving them, and packages into a desktop app.
 
-The main idea is that most local AI tools can generate answers, but very few try to decide whether an answer should be shown at all.
+The repo now includes a few things I almost never see in the same local project:
 
-NEXUS has a trust layer called ReflectScore that sits between the model output and the user:
+- a packaged Electron desktop app
+- a bundled fine-tuned adapter path
+- a trust gate that can warn on or block risky answers
+- canary-based RAG protection
+- an experimental Hive runtime for distributed answer search
+- a benchmark scaffold focused on honesty, safety, recovery, and task success
 
-- low-risk answers are served
-- medium-risk answers are shown with a warning
-- high-risk answers are blocked and can be rerouted to a stronger model
+The architecture is:
 
-Current shipped pieces:
+- `IntentParser -> PlannerEngine -> BlueprintGenerator -> Orchestrator`
+- runtime tools for files, terminal execution, retries, traces, and critics
+- `ReflectScore` to score hallucination risk before showing answers
+- `CanaryRAG` / `CanaryVaults` for leak detection and trust checks
+- `Hive` to explore trust-scored distributed search instead of just one local inference path
 
-- `CompressX` for compression
-- `AEON` for routing
-- `ReflectScore` for hallucination scoring and response gating
-- `CanaryRAG` and `CanaryVaults` for canary seeding and leak monitoring
-- CLI, FastAPI backend, and React dashboard
+What is live in the repo right now:
 
-The launch path is intentionally narrow right now:
+- CLI
+- FastAPI backend
+- React dashboard
+- Electron desktop shell
+- model control center
+- Hive panel
+- packaged Windows installer flow
+- SafeBench scaffold
 
-- Ollama
-- `phi3:mini`
-- `nexus doctor` for setup checks
+What is honest about the current state:
 
-What already works:
+- Hive is real code and UI, but the internet-wide peer mesh is still experimental
+- the desktop build has a bundled adapter path, but I am not claiming frontier-model quality from a tiny local package
+- some optional security and cloud paths still depend on external services or keys
 
-- install works
-- CLI works
-- API works
-- dashboard builds
-- tests and CI are in place
-- local fallback modes exist when optional services are missing
-
-What is still honest about the current state:
-
-- `nexus init` currently reports a serving-model proxy benchmark, not direct compressed-artifact execution
-- `nexus protect --seed` has a local fallback
-- `nexus protect --check` is still mostly a hosted-service path unless CanaryVaults is configured
+The interesting part for me is not only generation. It is deciding whether an answer should be shown at all.
 
 Repo:
 
@@ -47,6 +46,6 @@ https://github.com/nagu-io/nexus
 
 Would love feedback on:
 
-- whether the trust-gating model is useful
-- whether the local-first + hosted-upgrade path is compelling
-- whether the canary/RAG protection story feels valuable in practice
+- whether a trust-gated local coding workspace feels more valuable than another plain chat wrapper
+- whether the bundled adapter + desktop installer story is compelling
+- whether the Hive direction feels interesting even in experimental form

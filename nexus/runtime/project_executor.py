@@ -26,6 +26,7 @@ from typing import Any
 from nexus.runtime.build_artifacts import BuildArtifactMaterializer
 from nexus.runtime.executor import CodeExecutor, ExecutionResult
 from nexus.runtime.event_bus import runtime_event_bus
+from nexus.runtime.file_tool import build_edit_preview
 from nexus.runtime.scaffold_runner import ScaffoldRunError, ScaffoldRunner
 
 
@@ -427,6 +428,13 @@ class ProjectExecutor:
             }
 
         target_path.write_text(updated, encoding="utf-8")
+        edit_preview = build_edit_preview(
+            path=failing_file,
+            before_text=original,
+            after_text=updated,
+            action="edit_file",
+            existed=True,
+        )
         runtime_event_bus.emit(
             {
                 "type": "fix_applied",
@@ -434,12 +442,14 @@ class ProjectExecutor:
                 "task_id": task_id,
                 "file": failing_file,
                 "summary": f"Applied targeted fix to {failing_file}",
+                "edit_preview": edit_preview,
             }
         )
         return {
             "ok": True,
             "summary": f"Applied targeted fix to {failing_file}",
             "file": failing_file,
+            "edit_preview": edit_preview,
         }
 
     def execute(self, request: dict[str, Any]) -> dict[str, Any]:

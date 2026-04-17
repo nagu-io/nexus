@@ -1,0 +1,3 @@
+FROM __MODEL_SOURCE__
+TEMPLATE """<|system|>
+{{ .System }}<|end|>

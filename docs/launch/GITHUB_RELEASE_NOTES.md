@@ -2,55 +2,80 @@
 
 ## Title
 
-NEXUS v0.1.0 - local-first AI developer OS launch
+NEXUS v0.3.0 - local-first AI desktop with Hive, bundled adapter, and trust gating
 
 ## Release Body
 
-NEXUS is a local-first AI developer OS that runs on your machine, routes tasks across local and cloud paths, scores answers before serving them, and adds canary-based RAG protection.
+NEXUS is a local-first AI developer workspace that can plan, edit, execute, retry, and explain work on your machine.
+
+This release is the first version where the repo story matches the actual stack:
+
+- packaged Electron desktop app
+- bundled backend sidecar
+- bundled LoRA adapter path for local desktop builds
+- experimental Hive distributed-search runtime
+- ReflectScore hallucination scoring and answer gating
+- CanaryRAG / CanaryVaults trust and leak protection
+- SafeBench benchmark scaffold
 
 ### What is included
 
-- `CompressX` for compression
-- `AEON` for routing
-- `ReflectScore` for hallucination scoring and response gating
-- `CanaryRAG` and `CanaryVaults` for canary seeding and leak monitoring
-- Python CLI
+- Python runtime and orchestrator
 - FastAPI backend
 - React dashboard
+- Electron desktop shell
+- model control center
+- Hive panel and Hive API
+- packaged Windows installer flow
 
-### Launch path
+### Core modules
 
-NEXUS is currently optimized for:
-
-- Ollama
-- `phi3:mini`
-- Python 3.11+
+- `nexus/compress` - CompressX compression and artifact management
+- `nexus/router` - AEON-style routing and provider runtime
+- `nexus/reflect` - ReflectScore trust gate
+- `nexus/canary` - CanaryRAG and leak-monitoring workflows
+- `nexus/hive` - experimental distributed Hive runtime
+- `safebench` - benchmark scaffold for honesty, safety, recovery, and task success
 
 ### Quick start
 
 ```bash
 pip install -e .
-ollama pull phi3:mini
-ollama serve
 nexus doctor
-nexus init
-nexus chat
+
+python -m uvicorn nexus.api:app --host 127.0.0.1 --port 8000
+npm --prefix dashboard install
+npm --prefix dashboard run dev
+```
+
+Desktop development:
+
+```bash
+npm --prefix desktop install
+npm --prefix desktop run dev
+```
+
+Desktop packaging:
+
+```bash
+python -m pip install pyinstaller
+npm --prefix desktop run dist
 ```
 
 ### What works today
 
-- local chat and routed coding tasks
-- ReflectScore benchmark and trust gating
-- environment checks through `nexus doctor`
-- canary seeding with local fallback
-- dashboard and API
+- local chat and repo-aware coding workflows
+- ReflectScore-based trust gating
+- Canary protection with local fallback flows
+- Hive runtime demo surface in CLI, API, chat, and desktop UI
+- bundled desktop installer path
 - regression tests and CI
 
-### Honest runtime notes
+### Honest status notes
 
-- `nexus init` currently reports a serving-model proxy benchmark, not direct compressed-artifact execution
-- `nexus protect --seed` works in local fallback mode
-- `nexus protect --check` is a hosted-service path unless CanaryVaults is configured
+- Hive is implemented but still experimental; the public internet peer mesh is not the finished state yet
+- the bundled local model path is real, but it is not making a frontier-model quality claim
+- some optional security and cloud features still require external service configuration
 
 ### Repo
 

@@ -1,0 +1,74 @@
+{
+  "name": "nexus-desktop",
+  "private": true,
+  "version": "0.3.0",
+  "description": "Bundled Electron shell for the NEXUS local-first desktop app.",
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"npm --prefix ../dashboard run dev\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "build:ui": "npm --prefix ../dashboard run build",
+    "build:backend": "python ../tools/build_backend_bundle.py",
+    "lint:desktop": "node -c main.cjs && node -c preload.cjs",
+    "dist:dir": "npm run build:ui && npm run build:backend && electron-builder --dir",
+    "dist": "npm run build:ui && npm run build:backend && electron-builder"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "com.nexus.desktop",
+    "productName": "NEXUS",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dashboard/dist",
+        "to": "dashboard",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": ".artifacts/backend/nexus-backend",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../lora_model",
+        "to": "model-packs/default-adapter",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "NEXUS-Desktop-${version}-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    }
+  }
+}

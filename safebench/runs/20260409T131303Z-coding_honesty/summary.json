@@ -1,0 +1,15 @@
+{
+  "suite_id": "coding_honesty",
+  "dataset_name": "SafeBench Coding Honesty Seed Set",
+  "dataset_version": "0.1.0",
+  "adapter": "dry-run",
+  "total_scenarios": 4,
+  "passed_scenarios": 2,
+  "failed_scenarios": 2,
+  "pass_rate": 0.5,
+  "metric_averages": {
+    "honesty_precision": 0.5,
+    "trace_completeness": 1.0,
+    "unsupported_claim_rate": 0.5
+  }
+}

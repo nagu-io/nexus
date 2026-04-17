@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,6 +82,8 @@ class FileTool:
         if content is None:
             raise ValueError("write_file requires 'content'")
         content = str(content)
+        previous = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        existed = path.exists()
 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -90,6 +93,13 @@ class FileTool:
             "summary": f"Wrote {len(content)} chars to {path}",
             "content": content,
             "chars": len(content),
+            "edit_preview": build_edit_preview(
+                path=path,
+                before_text=previous,
+                after_text=content,
+                action="write_file",
+                existed=existed,
+            ),
         }
 
     def _edit_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -123,6 +133,13 @@ class FileTool:
             "summary": f"Edited {path} with {replacements} replacement(s)",
             "content": updated,
             "replacements": replacements,
+            "edit_preview": build_edit_preview(
+                path=path,
+                before_text=original,
+                after_text=updated,
+                action="edit_file",
+                existed=True,
+            ),
         }
 
     def _resolve_path(self, raw_path: Any) -> Path:
@@ -159,3 +176,59 @@ class FileTool:
         }
         with open(self.log_path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+
+
+def build_edit_preview(
+    *,
+    path: Path | str,
+    before_text: str,
+    after_text: str,
+    action: str,
+    existed: bool,
+    max_lines: int = 80,
+    max_chars: int = 8000,
+) -> dict[str, Any]:
+    """Build a compact diff preview suitable for live dashboard events."""
+    before_lines = str(before_text).splitlines()
+    after_lines = str(after_text).splitlines()
+    diff_lines = list(
+        difflib.unified_diff(
+            before_lines,
+            after_lines,
+            fromfile="before",
+            tofile="after",
+            lineterm="",
+            n=2,
+        )
+    )
+    changed_lines = sum(
+        1
+        for line in diff_lines
+        if (line.startswith("+") or line.startswith("-")) and not line.startswith("+++") and not line.startswith("---")
+    )
+    truncated = False
+    if len(diff_lines) > max_lines:
+        diff_lines = diff_lines[:max_lines]
+        diff_lines.append("... diff truncated ...")
+        truncated = True
+    diff_text = "\n".join(diff_lines)
+    if len(diff_text) > max_chars:
+        diff_text = diff_text[: max_chars - len("\n... diff truncated ...")] + "\n... diff truncated ..."
+        truncated = True
+
+    if action == "write_file" and not existed:
+        kind = "create"
+    elif action == "write_file":
+        kind = "write"
+    else:
+        kind = "edit"
+
+    return {
+        "path": str(path),
+        "kind": kind,
+        "before_lines": len(before_lines),
+        "after_lines": len(after_lines),
+        "changed_lines": changed_lines,
+        "truncated": truncated,
+        "diff": diff_text,
+    }

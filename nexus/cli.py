@@ -11,6 +11,7 @@ from pathlib import Path
 import click
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 
 console = Console()
 
@@ -416,6 +417,87 @@ def route():
 
 
 @cli.command()
+@click.argument("task", required=False)
+@click.option("--intent", default="coding", help="Hive task intent: coding, research, memory, design, canary")
+def hive(task, intent):
+    """Run the experimental NEXUS Hive distributed-search simulation."""
+    try:
+        from nexus.hive.runtime import HiveRuntime
+
+        runtime = HiveRuntime()
+        if not task:
+            task = click.prompt("What should Hive search for")
+
+        result = asyncio.run(runtime.demo(task, intent=intent))
+        plan = result["plan"]
+        winner = result.get("winner")
+
+        console.print(
+            Panel(
+                f"[bold]Task[/bold]\n{task}\n\n"
+                f"[bold]Intent[/bold] {intent}\n"
+                f"[bold]Selected nodes[/bold] {', '.join(plan['selected_nodes']) or 'none'}\n"
+                f"[bold]Canary coverage[/bold] {plan['canary_sample_size']} nodes\n"
+                f"[bold]Responses[/bold] {result['responded_nodes']}",
+                title="[bold cyan]NEXUS Hive[/bold cyan]",
+                style="cyan",
+            )
+        )
+
+        if winner:
+            console.print(
+                Panel(
+                    f"[bold]Winner[/bold] {winner['node_id']}\n"
+                    f"[bold]ReflectScore[/bold] {winner['reflect_score']:.2f} ({winner['reflect_verdict']})\n"
+                    f"[bold]Network score[/bold] {winner['network_score']:.2f}\n"
+                    f"[bold]Latency[/bold] {winner['latency_ms']:.0f} ms\n\n"
+                    f"{winner['output']}",
+                    title="[bold green]Consensus Winner[/bold green]",
+                    style="green",
+                )
+            )
+        elif result.get("note"):
+            console.print(Panel(result["note"], title="[bold yellow]Hive Note[/bold yellow]", style="yellow"))
+
+        if result.get("assembled_output"):
+            console.print(
+                Panel(
+                    result["assembled_output"],
+                    title="[bold blue]Hive Assembly[/bold blue]",
+                    style="blue",
+                )
+            )
+
+        failed_canaries = [item["node_id"] for item in result.get("canary_results", []) if not item.get("passed")]
+        if result.get("canary_results"):
+            console.print(
+                Panel(
+                    "All canary checks passed." if not failed_canaries else f"Canary failures: {', '.join(failed_canaries)}",
+                    title="[bold magenta]Canary Checks[/bold magenta]",
+                    style="magenta",
+                )
+            )
+
+        table = Table(title="Hive Candidate Ranking")
+        table.add_column("Node", style="cyan")
+        table.add_column("Score", style="green")
+        table.add_column("Reflect", style="yellow")
+        table.add_column("Trust", style="magenta")
+        table.add_column("Latency", style="white")
+        for candidate in result["candidates"][:6]:
+            table.add_row(
+                candidate["node_id"],
+                f"{candidate['network_score']:.2f}",
+                f"{candidate['reflect_score']:.2f} {candidate['reflect_verdict']}",
+                f"{candidate['trust_score']:.2f}",
+                f"{candidate['latency_ms']:.0f} ms",
+            )
+        console.print(table)
+    except Exception as error:
+        _print_command_error("nexus hive", error, "Use `nexus status` to confirm Hive is enabled.")
+
+
+@cli.command()
 def doctor():
     """Check all NEXUS runtime dependencies and explain what is missing."""
     console.print("[bold cyan]NEXUS Doctor - checking your setup...[/bold cyan]\n")
@@ -446,6 +528,11 @@ def status():
     console.print(
         f"[bold]ReflectScore thresholds:[/bold] warn >= {config.reflect_warn_threshold}, "
         f"block >= {config.reflect_block_threshold}"
+    )
+    console.print(
+        f"[bold]Hive:[/bold] {'enabled' if config.hive_enabled else 'disabled'} "
+        f"(trust >= {config.hive_min_trust_score}, "
+        f"replication {config.hive_replication_factor}, max nodes {config.hive_max_nodes})"
     )
     console.print("[bold]Setup check:[/bold] run `nexus doctor` for guided dependency fixes")
 

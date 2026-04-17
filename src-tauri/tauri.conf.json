@@ -1,0 +1,55 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dashboard:dev",
+    "beforeBuildCommand": "npm run dashboard:build",
+    "devPath": "http://localhost:5173",
+    "distDir": "../dashboard/dist"
+  },
+  "package": {
+    "productName": "NEXUS",
+    "version": "0.2.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "shell": {
+        "all": false,
+        "open": true,
+        "execute": true
+      },
+      "http": {
+        "all": true,
+        "request": true
+      },
+      "window": {
+        "all": true
+      }
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "io.nagu.nexus",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ]
+    },
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "fullscreen": false,
+        "resizable": true,
+        "title": "NEXUS",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ]
+  }
+}

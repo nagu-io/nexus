@@ -9,7 +9,7 @@ from typing import Any
 
 from rich.console import Console
 
-from nexus.router.provider_runtime import log_token_usage, retry_async
+from nexus.router.provider_runtime import call_local_chat, call_openrouter_chat, log_token_usage, retry_async
 
 console = Console()
 
@@ -210,50 +210,65 @@ class BaseAgent(ABC):
         }
 
     async def _call_local(self, prompt: str, system: str = None) -> str:
-        """Call local Ollama model."""
-        import httpx
-
+        """Call the configured local runtime."""
         system_prompt = system or self.system_prompt
-        full_prompt = f"System: {system_prompt}\n\nUser: {prompt}\n\nAssistant:"
         try:
-            async def operation() -> str:
-                async with httpx.AsyncClient(timeout=60) as client:
-                    response = await client.post(
-                        f"{self.config.ollama_base_url}/api/generate",
-                        json={"model": self.config.nexus_model, "prompt": full_prompt, "stream": False},
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
-                    text = payload.get("response", "No response")
-                    log_token_usage(
-                        provider="ollama",
-                        model=self.config.nexus_model,
-                        prompt=full_prompt,
-                        response_text=text,
-                        input_tokens=payload.get("prompt_eval_count"),
-                        output_tokens=payload.get("eval_count"),
-                    )
-                    return text
-
-            return await retry_async("ollama", operation)
+            text, usage = await call_local_chat(
+                config=self.config,
+                prompt=prompt,
+                system=system_prompt,
+            )
+            log_token_usage(
+                provider=usage.get("provider", "local"),
+                model=usage.get("model", self.config.nexus_model),
+                prompt=prompt,
+                response_text=text,
+                input_tokens=usage.get("prompt_tokens"),
+                output_tokens=usage.get("completion_tokens"),
+            )
+            return text
         except Exception:
             console.print(
-                f"[yellow]{self.name} could not reach the local Ollama model. "
+                f"[yellow]{self.name} could not reach the local model runtime. "
                 "Trying cloud fallback.[/yellow]"
             )
             cloud_response = await self._call_cloud(prompt, system)
             if cloud_response.startswith("Cloud error:"):
                 return (
-                    "No model backend is available. Start Ollama with `ollama serve` "
-                    "or install/configure Anthropic for cloud fallback."
+                    "No model backend is available. Start the configured local runtime "
+                    "or configure OpenRouter or Anthropic for cloud fallback."
                 )
             return cloud_response
 
     async def _call_cloud(self, prompt: str, system: str = None) -> str:
-        """Call Anthropic cloud model."""
+        """Call the configured cloud model provider."""
         system_prompt = system or self.system_prompt
+        if self.config.openrouter_api_key:
+            try:
+                text, usage = await call_openrouter_chat(
+                    api_key=self.config.openrouter_api_key,
+                    model=self.config.openrouter_model,
+                    prompt=prompt,
+                    system=system_prompt,
+                    base_url=self.config.openrouter_base_url,
+                )
+                log_token_usage(
+                    provider="openrouter",
+                    model=self.config.openrouter_model,
+                    prompt=prompt,
+                    response_text=text,
+                    input_tokens=usage.get("prompt_tokens"),
+                    output_tokens=usage.get("completion_tokens"),
+                )
+                return text
+            except Exception:
+                return (
+                    "Cloud error: OpenRouter request failed. "
+                    "Check your OPENROUTER_API_KEY, OPENROUTER_MODEL, and network connection."
+                )
+
         if not self.config.anthropic_api_key:
-            return "Cloud error: ANTHROPIC_API_KEY is not configured."
+            return "Cloud error: configure OPENROUTER_API_KEY or ANTHROPIC_API_KEY."
         try:
             import anthropic
 

@@ -11,33 +11,24 @@ const fmtNumber = value => (
 export default function RuntimeOverview({ overview }) {
   const metrics = overview?.metrics || {}
   const cards = [
-    { label: 'Runs', value: metrics.total_runs ?? 0, tone: 'text-cyan-300' },
-    { label: 'Success', value: fmtPercent(metrics.success_rate), tone: 'text-green-400' },
-    { label: 'Avg Retries', value: fmtNumber(metrics.avg_retries), tone: 'text-yellow-300' },
-    { label: 'Confidence', value: fmtPercent(metrics.avg_confidence), tone: 'text-cyan-400' },
-    { label: 'Cache Reuse', value: fmtPercent(metrics.cache_reuse_rate), tone: 'text-purple-300' },
-    { label: 'Hot Cache', value: metrics.reusable_cache_entries ?? 0, tone: 'text-orange-300' },
+    { label: 'Runs', value: metrics.total_runs ?? 0, tone: 'text-[var(--text-strong)]' },
+    { label: 'Success', value: fmtPercent(metrics.success_rate), tone: 'text-[var(--success)]' },
+    { label: 'Retry', value: fmtNumber(metrics.avg_retries), tone: 'text-[var(--warning)]' },
+    { label: 'Conf', value: fmtPercent(metrics.avg_confidence), tone: 'text-[var(--accent-2)]' },
   ]
 
   return (
-    <div className="bg-[#071222] border border-[#1e3a5f] rounded-lg p-4">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <p className="mono text-cyan-400 text-xs uppercase tracking-widest">Execution Intel</p>
-          <p className="text-sm text-[#7ea6c7] mt-1">
-            Recent autonomous runs, confidence, and cache health.
-          </p>
-        </div>
-        <span className="mono text-[11px] text-[#4a7fa5]">
-          {overview ? 'live' : 'awaiting runtime data'}
-        </span>
+    <div className="panel-surface p-4">
+      <div className="flex items-center justify-between">
+        <p className="section-label">Runtime</p>
+        <span className="meta-pill mono text-[11px]">{overview ? 'live' : 'waiting'}</span>
       </div>
 
-      <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
+      <div className="mt-3 grid grid-cols-2 gap-2">
         {cards.map(card => (
-          <div key={card.label} className="rounded-lg border border-[#18324f] bg-[#0b1a2f] p-3">
-            <p className="text-[11px] uppercase tracking-widest text-[#4a7fa5] mono">{card.label}</p>
-            <p className={`text-xl font-semibold mt-2 ${card.tone}`}>{card.value}</p>
+          <div key={card.label} className="panel-muted px-3 py-3">
+            <p className="section-label text-[10px]">{card.label}</p>
+            <p className={`mt-2 text-2xl font-semibold tracking-[-0.04em] ${card.tone}`}>{card.value}</p>
           </div>
         ))}
       </div>

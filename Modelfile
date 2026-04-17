@@ -1,0 +1,9 @@
+FROM D:\nexus\nexus_model
+TEMPLATE """<|system|>
+{{ .System }}<|end|>
+<|user|>
+{{ .Prompt }}<|end|>
+<|assistant|>"""
+PARAMETER stop "<|end|>"
+PARAMETER stop "<|user|>"
+PARAMETER stop "<|assistant|>"

@@ -7,7 +7,14 @@ from pathlib import Path
 
 from nexus.memory.conversation_store import ConversationStore
 from nexus.agents.research_agent import ResearchAgent
-from nexus.api import _compose_chat_prompt, _prepare_chat_prompt
+from nexus.api import (
+    _compose_chat_prompt,
+    _derive_touched_files,
+    _list_workspace_items,
+    _prepare_chat_prompt,
+    _resolve_workspace_path,
+    _resolve_workspace_root,
+)
 from nexus.runtime.context_reducer import ContextReductionResult
 
 
@@ -241,6 +248,54 @@ class ChatPromptReductionTests(unittest.TestCase):
         self.assertEqual(reduction.backend, "stub")
         self.assertEqual(reduction.metadata["scope"], "chat")
         self.assertEqual(reduction.metadata["history_messages"], 2)
+
+
+class WorkspaceHelpersTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        (self.root / "src").mkdir()
+        (self.root / ".nexus").mkdir()
+        (self.root / "src" / "app.py").write_text("print('hello')\n", encoding="utf-8")
+        (self.root / "README.md").write_text("# demo\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_resolve_workspace_root_accepts_existing_folder(self):
+        resolved = _resolve_workspace_root(str(self.root))
+        self.assertEqual(resolved, self.root.resolve())
+
+    def test_resolve_workspace_path_blocks_escape(self):
+        with self.assertRaises(PermissionError):
+            _resolve_workspace_path(self.root.resolve(), "../outside.txt")
+
+    def test_list_workspace_items_sorts_directories_before_files(self):
+        items = _list_workspace_items(self.root.resolve(), self.root.resolve())
+        names = [item["name"] for item in items]
+        self.assertNotIn(".nexus", names)
+        self.assertEqual(items[0]["type"], "directory")
+        self.assertEqual(items[0]["name"], "src")
+        self.assertEqual(items[1]["type"], "file")
+        self.assertEqual(items[1]["name"], "README.md")
+        self.assertEqual(items[1]["path"], "README.md")
+
+    def test_derive_touched_files_dedupes_workspace_paths(self):
+        touched = _derive_touched_files(
+            [
+                {
+                    "observation": {
+                        "tool_actions": [
+                            {"path": "src/app.py"},
+                            {"path": str((self.root / "README.md").resolve())},
+                            {"path": "src/app.py"},
+                        ]
+                    }
+                }
+            ],
+            self.root.resolve(),
+        )
+        self.assertEqual(touched, ["src/app.py", "README.md"])
 
 
 if __name__ == "__main__":

@@ -12,6 +12,103 @@ from typing import Any
 class WorkspaceDirectory:
     """A dedicated project workspace for one workflow execution."""
 
+    IGNORED_DIRS = {
+        ".git",
+        ".hg",
+        ".nexus",
+        ".next",
+        ".ruff_cache",
+        ".svn",
+        ".turbo",
+        ".venv",
+        ".pytest_cache",
+        "__pycache__",
+        "build",
+        "coverage",
+        "dist",
+        "node_modules",
+        "venv",
+    }
+    IGNORED_SUFFIXES = {
+        ".7z",
+        ".avi",
+        ".bin",
+        ".class",
+        ".db",
+        ".dll",
+        ".dylib",
+        ".eot",
+        ".exe",
+        ".gif",
+        ".gz",
+        ".ico",
+        ".jar",
+        ".jpeg",
+        ".jpg",
+        ".lock",
+        ".mp3",
+        ".mp4",
+        ".mov",
+        ".o",
+        ".obj",
+        ".pdf",
+        ".png",
+        ".pyc",
+        ".pyd",
+        ".pyo",
+        ".so",
+        ".sqlite",
+        ".svg",
+        ".tar",
+        ".ttf",
+        ".wav",
+        ".webm",
+        ".webp",
+        ".woff",
+        ".woff2",
+        ".zip",
+    }
+    TEXT_PREVIEW_NAMES = {
+        ".env",
+        "dockerfile",
+        "justfile",
+        "makefile",
+        "procfile",
+        "requirements.txt",
+    }
+    TEXT_PREVIEW_SUFFIXES = {
+        ".bat",
+        ".c",
+        ".cfg",
+        ".cmd",
+        ".cpp",
+        ".css",
+        ".csv",
+        ".env",
+        ".go",
+        ".h",
+        ".html",
+        ".ini",
+        ".java",
+        ".js",
+        ".json",
+        ".jsx",
+        ".md",
+        ".ps1",
+        ".py",
+        ".rs",
+        ".sh",
+        ".sql",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+    MAX_PREVIEW_BYTES = 16_384
+
     root_dir: Path
     workflow_id: str
     goal_slug: str
@@ -49,21 +146,17 @@ class WorkspaceDirectory:
     def snapshot(self, *, max_files: int = 40, max_preview_chars: int = 240) -> dict[str, Any]:
         """Return a compact workspace snapshot suitable for shared memory and prompts."""
         files: list[dict[str, Any]] = []
-        for path in sorted(self.root_dir.rglob("*")):
+        for path in self.root_dir.rglob("*"):
             if len(files) >= max_files:
                 break
-            if not path.is_file() or ".nexus" in path.parts or "node_modules" in path.parts:
+            if not path.is_file() or self._should_skip_path(path):
                 continue
             relative = path.relative_to(self.root_dir)
-            try:
-                preview = path.read_text(encoding="utf-8", errors="replace")[:max_preview_chars]
-            except Exception:
-                preview = ""
             files.append(
                 {
                     "path": relative.as_posix(),
                     "size": path.stat().st_size,
-                    "preview": preview,
+                    "preview": self._read_preview(path, max_preview_chars=max_preview_chars),
                 }
             )
         return {
@@ -78,3 +171,30 @@ class WorkspaceDirectory:
     def _slugify(value: str) -> str:
         slug = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
         return slug[:40] or "workspace"
+
+    def _should_skip_path(self, path: Path) -> bool:
+        relative_parts = path.relative_to(self.root_dir).parts
+        if any(part in self.IGNORED_DIRS for part in relative_parts):
+            return True
+        return path.suffix.lower() in self.IGNORED_SUFFIXES
+
+    def _read_preview(self, path: Path, *, max_preview_chars: int) -> str:
+        lower_name = path.name.lower()
+        lower_suffix = path.suffix.lower()
+        if lower_suffix not in self.TEXT_PREVIEW_SUFFIXES and lower_name not in self.TEXT_PREVIEW_NAMES:
+            return ""
+
+        try:
+            with path.open("rb") as handle:
+                payload = handle.read(self.MAX_PREVIEW_BYTES)
+        except Exception:
+            return ""
+
+        if b"\x00" in payload:
+            return ""
+
+        try:
+            text = payload.decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+        return text[:max_preview_chars]

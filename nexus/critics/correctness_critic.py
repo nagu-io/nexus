@@ -39,7 +39,15 @@ class CorrectnessCritic(BaseCritic):
         score = 1.0 - reflect_risk
         verdict = assessment.get("verdict", "unknown")
         action = assessment.get("action", "serve")
-        reason = f"ReflectScore reported {verdict} risk ({reflect_risk:.2f}) for this output."
+        tool_verified = self._tool_verified_success(observation)
+        if tool_verified:
+            score = max(score, 0.8)
+            reason = (
+                "Successful workspace validation raised the correctness floor above "
+                f"ReflectScore's {verdict} risk ({reflect_risk:.2f})."
+            )
+        else:
+            reason = f"ReflectScore reported {verdict} risk ({reflect_risk:.2f}) for this output."
         return self.assessment(
             score=score,
             reason=reason,
@@ -47,7 +55,17 @@ class CorrectnessCritic(BaseCritic):
                 "reflect_score": reflect_risk,
                 "verdict": verdict,
                 "action": action,
+                "tool_verified": tool_verified,
                 "should_warn": bool(assessment.get("should_warn", False)),
                 "should_reroute": bool(assessment.get("should_reroute", False)),
             },
+        )
+
+    def _tool_verified_success(self, observation: dict[str, Any]) -> bool:
+        if not observation.get("ok", False):
+            return False
+        tool_actions = observation.get("tool_actions") or []
+        return any(
+            action.get("tool") == "terminal_tool" and action.get("ok", False)
+            for action in tool_actions
         )

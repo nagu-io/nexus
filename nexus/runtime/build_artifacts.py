@@ -33,7 +33,10 @@ class BuildArtifactMaterializer:
     """Extract fenced file blocks and write them into a target directory."""
 
     FILE_BLOCK_PATTERN = re.compile(
-        r"(?ms)^`(?P<path>[^`\r\n]+)`\s*\r?\n```(?P<language>[^\r\n]*)\r?\n(?P<content>.*?)\r?\n```"
+        r"(?ms)^(?:`(?P<path_backtick>[^`\r\n]+)`|\*\*(?P<path_bold>[^*\r\n]+)\*\*)\s*\r?\n```(?P<language>[^\r\n]*)\r?\n(?P<content>.*?)\r?\n```"
+    )
+    FENCED_PATH_BLOCK_PATTERN = re.compile(
+        r"(?ms)^```[^\r\n]*\r?\n(?P<path>[^\r\n]+)\r?\n```\s*\r?\n```(?P<language>[^\r\n]*)\r?\n(?P<content>.*?)\r?\n```"
     )
     FILE_TREE_PATTERN = re.compile(
         r"(?ms)^File Tree:\s*\r?\n```text\r?\n(?P<tree>.*?)\r?\n```"
@@ -41,9 +44,11 @@ class BuildArtifactMaterializer:
 
     def extract(self, output: str) -> list[BuildArtifact]:
         """Extract path-tagged fenced code blocks from a model response."""
+        normalized_output = self._normalize_file_block_formats(output or "")
         artifacts: list[BuildArtifact] = []
-        for match in self.FILE_BLOCK_PATTERN.finditer(output or ""):
-            relative_path = self._normalize_relative_path(match.group("path"))
+        for match in self.FILE_BLOCK_PATTERN.finditer(normalized_output):
+            raw_path = match.group("path_backtick") or match.group("path_bold") or ""
+            relative_path = self._normalize_relative_path(raw_path)
             artifacts.append(
                 BuildArtifact(
                     relative_path=relative_path,
@@ -52,6 +57,19 @@ class BuildArtifactMaterializer:
                 )
             )
         return artifacts
+
+    def _normalize_file_block_formats(self, output: str) -> str:
+        def replace_fenced_path(match: re.Match[str]) -> str:
+            raw_path = (match.group("path") or "").strip()
+            try:
+                self._normalize_relative_path(raw_path)
+            except BuildArtifactError:
+                return match.group(0)
+            language = (match.group("language") or "").strip()
+            content = match.group("content")
+            return f"`{raw_path}`\n```{language}\n{content}\n```"
+
+        return self.FENCED_PATH_BLOCK_PATTERN.sub(replace_fenced_path, output)
 
     def default_output_dir(self, *, goal: str, output: str, base_dir: Path) -> Path:
         """Choose a predictable default target directory for a build scaffold."""

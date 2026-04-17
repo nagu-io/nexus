@@ -1,235 +1,215 @@
 # NEXUS
 
-> Autonomous local AI execution system that plans, codes, runs, self-corrects, and learns. Runs on phi3:mini. Free. No cloud required.
+> Local-first autonomous AI developer workspace with experimental Hive intelligence, a bundled fine-tuned adapter path, hallucination gating, and CanaryRAG trust checks.
 
 ![Python](https://img.shields.io/badge/python-3.11+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Stars](https://img.shields.io/github/stars/nagu-io/nexus)
+![Desktop](https://img.shields.io/badge/desktop-electron-black)
 
-NEXUS is not a chat wrapper or an agent demo. It is a full autonomous execution system.
+NEXUS is not a plain chat window. It takes a goal, compiles it into a workflow, executes against a local workspace, scores output risk before serving it, and exposes the full system through a dashboard, API, CLI, and packaged desktop app.
 
-Give it a goal. It compiles a plan, selects agents by capability, executes through a policy-governed orchestrator, evaluates every output with multiple critics, self-corrects when confidence is low, caches decisions that work, decays decisions that stale, and exposes the entire run through structured traces. Everything runs offline on your own hardware.
+The repo already contains the major pieces of that stack:
 
-## What Landed
+- autonomous repo-first coding runtime
+- packaged Electron desktop app
+- experimental Hive distributed-search runtime
+- ReflectScore hallucination gate
+- CanaryRAG / CanaryVaults trust layer
+- bundled LoRA adapter path for desktop builds
+- SafeBench benchmark suite
 
-This repo now includes the runtime pieces that make long autonomous runs practical:
+## What Ships Today
 
-- Streaming execution with idle watchdogs so builds, scripts, and servers no longer fail silently.
-- Multi-file project materialization, dependency install, run, and targeted fix support.
-- Git checkpoints and rollback support inside the runtime loop.
-- Local-first conversation history with SQLite-backed session persistence and search.
-- Live dashboard updates over WebSocket, including terminal-style runtime events.
-- Context reduction for oversized chat history, workspace prompts, logs, and file-heavy tasks before they hit the active model.
-- Plugin discovery for agents, critics, and tools.
-- Automatic project docs generation for `README.md` and `ARCHITECTURE.md` after builds complete.
+- Goal compiler: `IntentParser -> PlannerEngine -> BlueprintGenerator -> Orchestrator`
+- Repo-aware execution with file editing, terminal execution, retries, traces, and critics
+- React dashboard for chat, files, runtime telemetry, model control, and Hive inspection
+- Electron desktop shell with bundled backend sidecar
+- ReflectScore risk scoring on model output before answers are served
+- Canary-based leak detection and trust workflows
+- `CompressX` compression and model artifact management
+- Experimental Hive route for trust-scored distributed answer search
+- SafeBench for honesty, safety, recovery, and task-success benchmarking
 
-## What Makes This Real
+## Hive - Distributed Intelligence
 
-| Capability | How |
-|---|---|
-| **Autonomous execution loop** | `CodeExecutor` writes code → runs it → captures errors → feeds errors to the coding agent → gets a fix → retries. Up to 3 self-correction cycles per task. |
-| **Policy-governed orchestration** | 47KB orchestrator with runtime policy engine, strategy adaptation, parallel scheduling, and a 24-step tool budget per agent cycle. |
-| **Multi-critic evaluation** | Correctness, efficiency, and safety critics score every output. Confidence thresholds gate acceptance. Low scores trigger retries or agent switching. |
-| **Skill memory** | Successful workflows are cached with ranked reuse. Stale patterns decay automatically. The system gets better the more you use it. |
-| **Decision cache** | Agent/strategy/confidence combos that worked are remembered and reused, skipping expensive re-evaluation when the same pattern recurs. |
-| **Context reduction** | Oversized chat history, workspace-grounded prompts, logs, and file dumps are reduced to fit the model budget while raw history stays stored and traceable. |
-| **Full explainability** | CLI, API, and dashboard read from the same `RuntimeInsights` layer. Every decision, retry, and fallback is traced. |
-| **Offline-first** | Optimized for Ollama + `phi3:mini`. Optional cloud fallback to Anthropic or Groq. |
+NEXUS Hive does not try to split one forward pass across the internet. It distributes the search for the best answer.
 
-## Quick Start
+- trusted nodes race the same or related subtasks
+- canary tasks check whether nodes are still trustworthy
+- ReflectScore ranks returned candidates
+- top candidates can be assembled into one final answer
+
+What is implemented now:
+
+- Hive runtime code in [`nexus/hive/`](nexus/hive/)
+- routing integration in [`nexus/router/mind_router.py`](nexus/router/mind_router.py)
+- API endpoints at `/hive/status` and `/hive/demo`
+- CLI entry point: `nexus hive "build me a full authentication system"`
+- desktop Hive panel in the dashboard
+
+Read the architecture note in [`docs/NEXUS_HIVE.md`](docs/NEXUS_HIVE.md).
+
+Honest status: Hive is real in the repo, but the internet-wide peer transport and hardened remote sandbox are still experimental work, not a finished public mesh.
+
+## Embedded Model
+
+NEXUS now has a real bundled local model path instead of only depending on a separate manual model install.
+
+- the fine-tuned adapter artifacts live in [`lora_model/`](lora_model/)
+- the desktop packager bundles that adapter as `model-packs/default-adapter`
+- the packaged Electron shell auto-detects the bundled adapter and can boot in adapter mode
+- `CompressX` lives in [`nexus/compress/`](nexus/compress/) and manages compression artifacts and launch-pack accounting
+
+This matters because the packaged desktop build can ship a local-first runtime without forcing users to manually wire up a separate fine-tuned model first.
+
+Honest status: the local stack is strong for offline and local-first workflows, but it is not claiming frontier Claude/Codex-level quality from a tiny bundled model.
+
+## Trust Stack
+
+NEXUS has a full trust story instead of only a generation story.
+
+- [`nexus/reflect/`](nexus/reflect/): ReflectScore hallucination scoring and answer gating
+- [`nexus/canary/`](nexus/canary/): CanaryRAG and CanaryVaults integration
+- [`nexus/critics/`](nexus/critics/): correctness, safety, and efficiency evaluation
+- [`safebench/`](safebench/): benchmark scaffold for honesty, safety, recovery, and task success
+
+The important idea is simple: NEXUS tries to decide whether an answer should be shown at all, not just how to generate one.
+
+## Desktop App
+
+The active desktop product is:
+
+- backend/runtime in [`nexus/`](nexus/)
+- dashboard UI in [`dashboard/`](dashboard/)
+- Electron shell in [`desktop/`](desktop/)
+
+The packaging flow bundles:
+
+- dashboard build output
+- FastAPI backend sidecar
+- default local adapter pack
+
+Read the packaging note in [`docs/DESKTOP_PACKAGING.md`](docs/DESKTOP_PACKAGING.md).
+
+### Run The Web Stack
+
+Install Python and frontend dependencies:
 
 ```bash
-# 1. Install
 pip install -e .
+npm --prefix dashboard install
+```
 
-# 2. Start the local model
+Optional local-model setup if you want the Ollama path:
+
+```bash
 ollama pull phi3:mini
 ollama serve
-
-# 3. Install the dashboard
-npm run dashboard:install
-npm run dashboard:build
-
-# 4. Verify
-nexus doctor
-nexus init
 ```
 
-## Run It
+Run the backend:
 
 ```bash
-# Backend + dashboard together
-npm run dev
-
-# Or with pnpm
-pnpm install && pnpm dev
+python -m uvicorn nexus.api:app --host 127.0.0.1 --port 8000
 ```
 
-## First Runs
+Run the dashboard:
 
 ```bash
-# Build with full explain trace
-python main.py --build --explain "create react login page"
-
-# Analyze a codebase
-python main.py --analyze --explain "analyze this repository"
-
-# Build, scaffold to disk, install deps, and launch locally
-python main.py --build --run --output-dir generated/login-system \
-  "build a full stack login system with Express backend, API routes, and basic frontend form"
+npm --prefix dashboard run dev
 ```
 
-Each run shows the compiled plan, runtime decisions, retry/fallback strategy, and final confidence score.
+### Run The Desktop App
 
-**`--write`** materializes generated files to disk. Default: `./generated/<scaffold-name>`. Add `--force` to overwrite.
+Install desktop dependencies:
 
-**`--run`** builds on `--write`: materializes, installs npm dependencies, picks a free port starting at 3010, launches the app, and prints the URL.
-
-## The Execution Loop
-
+```bash
+npm --prefix desktop install
 ```
-goal
-  → intent parser (classify intent + complexity)
-  → planner engine (generate task graph with dependencies)
-  → blueprint generator (create executable blueprint)
-  → orchestrator
-      → policy engine (govern execution behavior)
-      → agent selection (capability-based wiring)
-      → agent execution (think → act → observe → reflect)
-      → tool dispatch (file_tool, terminal_tool, code_executor)
-      → multi-critic evaluation (correctness + efficiency + safety)
-      → strategy engine (retry, fallback, agent switch)
-      → decision cache (reuse what works, decay what stales)
-  → skill memory (persist successful workflows)
-  → runtime insights (expose everything to CLI/API/dashboard)
+
+Run Electron in development:
+
+```bash
+npm --prefix desktop run dev
 ```
+
+Build the desktop installer:
+
+```bash
+python -m pip install pyinstaller
+npm --prefix desktop run dist
+```
+
+Installer outputs are written under [`desktop/release/`](desktop/release/).
+
+## Workflow
+
+Typical repo-first flow:
+
+1. Launch the dashboard or desktop app.
+2. Open a repository in the `Files` tab.
+3. Switch to `Chat`.
+4. Turn on repo/workspace mode when needed.
+5. Send a task like `fix the login flow` or `build an auth page`.
+6. Watch runtime decisions, traces, and trust scores update live.
+
+For existing repositories, NEXUS writes its own runtime artifacts under `.nexus/` so it does not overwrite the repo's real top-level docs during analysis loops.
 
 ## Architecture
 
-```
-CLI / API / Dashboard
-  → RuntimeInsights (single source of truth)
-  → Compiler
-       → IntentParser → PlannerEngine → BlueprintGenerator
-  → Orchestrator (47KB — policy, strategy, tool dispatch, parallel scheduling)
-       → PolicyEngine, StrategyEngine, SharedMemory, WiringEngine
-  → Agents
-       → CodingAgent (27KB — autonomous mode, stack validation, fix loops)
-       → ResearchAgent, MemoryAgent, FileAgent, CanaryAgent
-  → Runtime Tools
-       → CodeExecutor (write → run → error → fix loop)
-       → ContextReducer (prompt budget management for long history/log/file inputs)
-       → FileTool, TerminalTool
-  → Evaluation
-       → CorrectnessCritic, EfficiencyCritic, SafetyCritic → MultiCritic
-  → Memory
-       → SkillMemory (ranked workflow reuse with decay)
-       → DecisionCache (agent/strategy confidence reuse)
-       → EnvironmentMemory (per-project session persistence)
-       → ExecutionTrace, DecisionLog
-  → Extensions
-       → MindRouter (Ollama/Anthropic/Groq provider routing)
-       → ReflectScore (self-evaluation + benchmarking)
-       → ModelCompressor (GPTQ quantization)
-       → Voice Interface (Whisper + TTS)
+High-level execution flow:
+
+```text
+goal
+  -> IntentParser
+  -> PlannerEngine
+  -> BlueprintGenerator
+  -> Orchestrator
+       -> WiringEngine
+       -> PolicyEngine
+       -> StrategyEngine
+       -> FileTool / TerminalTool / CodeExecutor / ProjectExecutor / GitTool
+       -> MultiCritic
+       -> ReflectScore
+  -> RuntimeInsights / API / Dashboard / Desktop
 ```
 
-## Product Surfaces
+Main code areas:
 
-| Surface | Purpose |
-|---------|---------|
-| **CLI** | Direct execution, `--explain` mode, `nexus doctor/chat/reflect/protect` |
-| **FastAPI** | Programmatic access, dashboard data endpoints |
-| **React Dashboard** | Run history, success/retry trends, cache health, skill patterns, live agent status |
+- [`nexus/`](nexus/): compiler, runtime, agents, API, memory, router, trust systems
+- [`dashboard/`](dashboard/): React dashboard
+- [`desktop/`](desktop/): Electron desktop shell and installer config
+- [`tests/`](tests/): regression suite
+- [`tools/`](tools/): backend bundling and dev helpers
+- [`docs/`](docs/): architecture, packaging, and launch material
+- [`safebench/`](safebench/): benchmark scaffold
 
-All three read from the same `RuntimeInsights` layer.
-
-## Core Commands
+## Useful Commands
 
 ```bash
-nexus doctor                           # Environment checks
-nexus status                           # System status
-nexus init                             # Initialize workspace
-nexus code "build a FastAPI auth service"  # Direct code generation
-nexus chat                             # Interactive chat
-nexus chat --dashboard                 # Chat + dashboard
-nexus reflect                          # Self-evaluation
-nexus reflect --compare original       # Compare against baseline
-nexus reflect --live                   # Live reflect loop
-nexus protect --check                  # Security scan
-nexus protect --seed https://example.com/docs  # Seed threat intelligence
-```
+nexus doctor
+nexus status
+nexus chat
+nexus reflect
+nexus protect --status
+nexus hive "build me a full authentication system"
 
-## Dashboard
+python main.py --build --explain "create react login page"
+python main.py --analyze --explain "analyze this repository"
 
-```bash
-# One command from repo root
-npm run dev
-
-# Two-terminal fallback
-python -m uvicorn nexus.api:app --port 8000
-npm run dashboard:dev
-```
-
-The dashboard exposes: run history, success rate and retry trends, cache health, top skill-memory patterns, and live system/agent status.
-
-## Context Reduction
-
-NEXUS keeps raw history, traces, and stored conversations intact, but reduces oversized prompts before they hit the active model. This applies to long chat sessions, workspace-grounded repo prompts, runtime logs, and large file-heavy task instructions.
-
-Configuration:
-
-```bash
-NEXUS_CONTEXT_REDUCTION_ENABLED=true
-NEXUS_CONTEXT_REDUCTION_BACKEND=heuristic
-NEXUS_CONTEXT_REDUCTION_THRESHOLD_CHARS=12000
-NEXUS_CONTEXT_REDUCTION_TARGET_CHARS=6000
-NEXUS_CONTEXT_REDUCTION_MODEL=
-```
-
-The reducer is wired through the orchestrator, API chat path, direct `MindRouter` routes, the CLI, and Jarvis. The dashboard surfaces the active reducer backend and shows a per-response reduction badge when a prompt was compacted.
-
-## Repository Layout
-
-```
-nexus/                  Python core — compiler, runtime, agents, API
-  agents/               CodingAgent, ResearchAgent, FileAgent, MemoryAgent
-  compiler/             PlannerEngine
-  critics/              Correctness, Efficiency, Safety → MultiCritic
-  memory/               SkillMemory, EnvironmentMemory, SupabaseMemory
-  runtime/              PolicyEngine, StrategyEngine, DecisionCache,
-                        CodeExecutor, FileTool, TerminalTool, Trace, Insights
-  canary/               CanaryAgent, RiskEngine
-  reflect/              ReflectScore, Benchmarks, Evaluator
-  router/               MindRouter (provider routing)
-  compress/             Model compression (GPTQ)
-  jarvis/               Voice interface (Whisper + TTS)
-dashboard/              React + Tailwind frontend
-tests/                  Regression suite (72KB+)
-docs/launch/            Demo script, HN draft, launch checklist
-tools/                  Dev orchestrator
-main.py                 Compiler → orchestrator runtime entrypoint
-```
-
-## Testing
-
-```bash
-# Full regression suite
 python -m unittest discover -s tests -v
-
-# Executor tests only
-python -m unittest tests/test_executor.py -v
-
-# Dashboard build check
-npm run dashboard:build
+npm --prefix dashboard run build
+npm --prefix desktop run dist
 ```
 
-`npm audit --prefix dashboard` is currently clean with 0 known vulnerabilities.
+## Important Repo Notes
 
-## Launch Assets
-
-Launch materials live in `docs/launch/`: `DEMO_SCRIPT.md`, `HACKERNEWS_DRAFT.md`, `LAUNCH_CHECKLIST.md`, `COLD_INSTALL_REPORT.md`.
+- The active product lives in `nexus/`, `dashboard/`, `desktop/`, `tests/`, and `docs/`.
+- [`backend/`](backend/) and [`frontend/`](frontend/) are older sample/prototype app folders, not the main NEXUS product.
+- [`src-tauri/`](src-tauri/) is an older Tauri desktop prototype; Electron is the active desktop path.
+- `lora_model/` contains the adapter artifacts used by the bundled desktop model path.
+- `nexus_model/` contains much larger full model checkpoint artifacts.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [`LICENSE`](LICENSE).

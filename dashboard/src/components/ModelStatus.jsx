@@ -3,51 +3,43 @@ import React from 'react'
 export default function ModelStatus({ status }) {
   const model = status?.model || 'phi3:mini'
   const ollamaOk = status?.ollama
+  const localBackend = status?.local_backend || 'unknown'
+  const cloudProvider = status?.cloud_provider || 'none'
   const contextReduction = status?.context_reduction || null
 
+  const rows = [
+    { label: 'Model', value: model, tone: 'text-[var(--text-strong)]' },
+    { label: 'Backend', value: localBackend, tone: 'text-[var(--accent-2)]' },
+    { label: 'Ollama', value: ollamaOk ? 'connected' : 'offline', tone: ollamaOk ? 'text-[var(--success)]' : 'text-[var(--danger)]' },
+    { label: 'Cloud', value: cloudProvider, tone: cloudProvider === 'none' ? 'text-[var(--text-soft)]' : 'text-[var(--warning)]' },
+    {
+      label: 'Reducer',
+      value: contextReduction?.enabled ? contextReduction.backend : 'disabled',
+      tone: contextReduction?.enabled ? 'text-[var(--accent-2)]' : 'text-[var(--text-soft)]',
+    },
+    {
+      label: 'Budget',
+      value: contextReduction?.enabled
+        ? `${formatCompactLength(contextReduction.target_chars)} / ${formatCompactLength(contextReduction.threshold_chars)}`
+        : '--',
+      tone: 'text-[var(--text)]',
+    },
+  ]
+
   return (
-    <div className="bg-[#0a1628] border border-[#1e3a5f] rounded-lg p-4">
-      <p className="mono text-cyan-400 text-xs mb-3 uppercase tracking-widest">Model</p>
-      <div className="space-y-2">
-        <div className="flex justify-between items-center">
-          <span className="text-xs text-[#4a7fa5]">Active</span>
-          <span className="mono text-xs text-white">{model}</span>
-        </div>
-        <div className="flex justify-between items-center">
-          <span className="text-xs text-[#4a7fa5]">Engine</span>
-          <span className="mono text-xs text-cyan-400">CompressX</span>
-        </div>
-        <div className="flex justify-between items-center">
-          <span className="text-xs text-[#4a7fa5]">Ollama</span>
-          <div className="flex items-center gap-1">
-            <div className={`w-1.5 h-1.5 rounded-full ${ollamaOk ? 'bg-green-400' : 'bg-red-500'}`} />
-            <span className={`mono text-xs ${ollamaOk ? 'text-green-400' : 'text-red-400'}`}>
-              {ollamaOk ? 'running' : 'offline'}
-            </span>
+    <div className="panel-surface p-4">
+      <div className="flex items-center justify-between">
+        <p className="section-label">Runtime</p>
+        <span className="meta-pill mono text-[11px]">{localBackend}</span>
+      </div>
+
+      <div className="mt-4 space-y-3">
+        {rows.map(row => (
+          <div key={row.label} className="panel-muted flex items-center justify-between px-3 py-3">
+            <span className="text-sm text-[var(--text-soft)]">{row.label}</span>
+            <span className={`mono text-sm ${row.tone}`}>{row.value}</span>
           </div>
-        </div>
-        <div className="flex justify-between items-center">
-          <span className="text-xs text-[#4a7fa5]">Compression</span>
-          <span className="mono text-xs text-yellow-400">3.6x</span>
-        </div>
-        <div className="flex justify-between items-center">
-          <span className="text-xs text-[#4a7fa5]">Context</span>
-          <span
-            className={`mono text-xs ${
-              contextReduction?.enabled ? 'text-cyan-300' : 'text-[#4a7fa5]'
-            }`}
-          >
-            {contextReduction?.enabled ? contextReduction.backend : 'disabled'}
-          </span>
-        </div>
-        <div className="flex justify-between items-center">
-          <span className="text-xs text-[#4a7fa5]">Prompt Budget</span>
-          <span className="mono text-xs text-white">
-            {contextReduction?.enabled
-              ? `${formatCompactLength(contextReduction.target_chars)} / ${formatCompactLength(contextReduction.threshold_chars)}`
-              : '--'}
-          </span>
-        </div>
+        ))}
       </div>
     </div>
   )

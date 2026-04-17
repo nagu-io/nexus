@@ -24,6 +24,31 @@ def _npm_command() -> str | None:
     return None
 
 
+def _backend_python() -> str:
+    """Prefer a project-local Python env for the API when one exists."""
+    candidates = []
+    if os.name == "nt":
+        candidates.extend(
+            [
+                ROOT / ".train_env" / "Scripts" / "python.exe",
+                ROOT / ".venv" / "Scripts" / "python.exe",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                ROOT / ".train_env" / "bin" / "python",
+                ROOT / ".venv" / "bin" / "python",
+            ]
+        )
+    candidates.append(Path(sys.executable))
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
+
 def _port_open(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.3)
@@ -45,7 +70,7 @@ def _check_prerequisites(frontend_port: int) -> list[str]:
 
 
 def _spawn_processes(frontend_port: int) -> tuple[subprocess.Popen[str], subprocess.Popen[str]]:
-    backend_cmd = [sys.executable, "-m", "uvicorn", "nexus.api:app", "--port", "8000"]
+    backend_cmd = [_backend_python(), "-m", "uvicorn", "nexus.api:app", "--port", "8000"]
     npm = _npm_command()
     if npm is None:
         raise RuntimeError("npm was not found on PATH")

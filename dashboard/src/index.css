@@ -1,6 +1,47 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  /* Deep, rich obsidian base */
+  --app-bg: #07090f;
+  --app-bg-muted: #0a0d16;
+  --window-bg: #0b0e17;
+  
+  /* Translucent Panels for Glassmorphism */
+  --panel: rgba(18, 22, 33, 0.55);
+  --panel-soft: rgba(22, 27, 41, 0.45);
+  --panel-muted: rgba(12, 15, 23, 0.55);
+  --panel-glass: rgba(255, 255, 255, 0.02);
+  
+  /* Vibrance and Neon Highlights */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --border-glow: rgba(0, 240, 255, 0.2);
+  
+  --text: #e2e8f0;
+  --text-strong: #ffffff;
+  --text-muted: #94a3b8;
+  --text-soft: #64748b;
+  
+  /* Premium Accents: Cyan to Purple gradients */
+  --accent: #00f0ff;
+  --accent-soft: rgba(0, 240, 255, 0.15);
+  --accent-2: #bf00ff;
+  --accent-2-soft: rgba(191, 0, 255, 0.15);
+  --accent-primary-grad: linear-gradient(135deg, #00f0ff 0%, #0080ff 100%);
+  --accent-secondary-grad: linear-gradient(135deg, #bf00ff 0%, #4000ff 100%);
+
+  /* Function states */
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --shadow: 0 40px 100px -10px rgba(0, 0, 0, 0.8);
+  --glow-shadow: 0 0 25px rgba(0, 240, 255, 0.1);
+}
 
 * {
   box-sizing: border-box;
@@ -8,29 +49,257 @@
   padding: 0;
 }
 
+html,
+body,
+#root {
+  min-height: 100%;
+  height: 100%;
+}
+
 body {
-  font-family: 'Inter', sans-serif;
-  background: #020b18;
-  color: #e2f0ff;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  background-color: transparent;
+  color: var(--text);
   min-height: 100vh;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
 }
 
-::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-track { background: #0a1628; }
-::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 4px; }
-
-.mono { font-family: 'Space Mono', monospace; }
-
-@keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 8px rgba(0, 168, 255, 0.3); }
-  50% { box-shadow: 0 0 20px rgba(0, 168, 255, 0.7); }
+h1, h2, h3, h4, 
+.font-display {
+  font-family: "Outfit", sans-serif;
 }
 
-.glow { animation: pulse-glow 2s ease-in-out infinite; }
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.02), transparent 30%),
+    linear-gradient(315deg, rgba(255, 255, 255, 0.015), transparent 24%);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.4);
+}
+
+.mono {
+  font-family: "Berkeley Mono", "Cascadia Code", "Consolas", monospace;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 16px;
+  display: flex;
+}
+
+.window-surface {
+  flex: 1;
+  background: var(--window-bg);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  position: relative;
+  backdrop-filter: blur(12px);
+}
+
+.panel-surface,
+.panel-soft,
+.panel-muted {
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  position: relative;
+  overflow: hidden;
+}
+
+.panel-surface { background: var(--panel); border-radius: 18px; }
+.panel-soft { background: var(--panel-soft); border-radius: 16px; }
+.panel-muted { background: var(--panel-muted); border-radius: 16px; }
+
+/* Dynamic Borders */
+.panel-surface::after,
+.panel-soft::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0) 100%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+.section-label {
+  font-family: "Outfit", sans-serif;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  background: var(--accent-primary-grad);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: var(--glow-shadow);
+}
+
+.meta-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-glass);
+  padding: 0.35rem 0.75rem;
+  color: var(--text-muted);
+  font-size: 11px;
+  backdrop-filter: blur(8px);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.meta-pill.interactive:hover {
+  border-color: rgba(0, 240, 255, 0.4);
+  background: rgba(0, 240, 255, 0.05);
+  color: var(--text-strong);
+  box-shadow: 0 0 15px rgba(0, 240, 255, 0.15);
+}
+
+.nav-pill {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  padding: 0.85rem 1rem;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.nav-pill:hover {
+  background: var(--panel-glass);
+  border-color: var(--border-strong);
+  transform: translateX(4px);
+  color: var(--text-strong);
+}
+
+/* Chat bubble styling globally */
+.chat-bubble-user {
+  background: linear-gradient(135deg, rgba(0, 240, 255, 0.12) 0%, rgba(0, 128, 255, 0.12) 100%);
+  border: 1px solid rgba(0, 240, 255, 0.2);
+  box-shadow: 0 4px 20px rgba(0, 128, 255, 0.08);
+  border-radius: 18px 18px 4px 18px;
+}
+
+.chat-bubble-system {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 18px 18px 18px 4px;
+}
+
+.app-drag { -webkit-app-region: drag; }
+.app-no-drag { -webkit-app-region: no-drag; }
+
+.desktop-control {
+  display: inline-flex;
+  height: 28px;
+  width: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  transition: all 0.2s ease;
+}
+
+.desktop-control:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-strong);
+}
+
+.desktop-control.destructive:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+}
+
+.fade-in {
+  animation: fadeIn 300ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes pulseBorder {
+  0% { box-shadow: 0 0 0 0 rgba(0, 240, 255, 0.4); }
+  70% { box-shadow: 0 0 0 6px rgba(0, 240, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 240, 255, 0); }
+}
+
+.input-glow-focus:focus-within {
+  border-color: rgba(0, 240, 255, 0.5);
+  background: rgba(0, 240, 255, 0.02);
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.1) inset;
+}
+
+/* Ambient Background Utilities */
+.noise-layer {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+@keyframes morphSlow {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(2%, 2%) scale(1.05); }
+  66% { transform: translate(-2%, 4%) scale(0.95); }
+}
+
+@keyframes slideUpFade {
+  from { opacity: 0; transform: translateY(25px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-.fade-in { animation: fadeIn 0.3s ease forwards; }
+.animate-morph-slow {
+  animation: morphSlow 15s ease-in-out infinite alternate;
+}
+.animate-morph-medium {
+  animation: morphSlow 12s ease-in-out infinite alternate-reverse;
+}
+.animate-morph-fast {
+  animation: morphSlow 10s ease-in-out infinite alternate;
+}
+.animate-slide-up {
+  animation: slideUpFade 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.animate-pulse-slow {
+  animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

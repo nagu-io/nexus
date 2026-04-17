@@ -933,6 +933,8 @@ class Orchestrator:
                 "action": tool_request.get("action"),
                 "summary": result.get("summary", ""),
                 "ok": result.get("ok", False),
+                "path": result.get("path"),
+                "edit_preview": result.get("edit_preview"),
             }
         )
         if tool_name == "file_tool" and tool_request.get("action") in {"edit_file", "write_file"}:
@@ -944,6 +946,7 @@ class Orchestrator:
                     "agent": current_agent,
                     "file": result.get("path") or arguments.get("path"),
                     "summary": result.get("summary", ""),
+                    "edit_preview": result.get("edit_preview"),
                 }
             )
         LOGGER.info(

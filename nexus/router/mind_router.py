@@ -2,7 +2,7 @@
 AEON Mind Router - intelligent task routing with ReflectScore trust gating.
 Classifies task complexity and intent, then routes to:
   - Local CompressX model via Ollama
-  - Cloud model via Anthropic API
+  - Cloud model via OpenRouter or Anthropic API
   - Specialist agent
 ReflectScore then decides whether to serve, warn, or block and reroute.
 """
@@ -15,10 +15,24 @@ from typing import Optional
 from rich.console import Console
 from rich.table import Table
 
-from nexus.router.provider_runtime import log_token_usage, retry_async
+from nexus.router.provider_runtime import (
+    active_local_model_label,
+    call_local_chat,
+    call_openrouter_chat,
+    log_token_usage,
+    preferred_cloud_provider,
+    retry_async,
+)
 from nexus.runtime.context_reducer import BaseContextReducer, ContextReductionResult, build_context_reducer
 
 console = Console()
+
+LOCAL_ROUTER_SYSTEM_PROMPT = (
+    "You are NEXUS, a local repo-first AI coding assistant. "
+    "Be concise, accurate, and action-oriented. Prefer repository facts, real commands, "
+    "and honest uncertainty over generic claims. Do not invent frameworks, files, endpoints, "
+    "or capabilities that are not present."
+)
 
 INTENT_KEYWORDS = {
     "coding": ["write code", "build", "implement", "debug", "fix bug", "function", "class", "script", "python", "rust", "javascript", "refactor", "test"],
@@ -26,6 +40,7 @@ INTENT_KEYWORDS = {
     "memory": ["remember", "recall", "what did i", "last time", "history", "previous", "stored", "save this"],
     "file": ["read file", "write file", "open", "save", "delete", "list files", "directory", "folder", "create file"],
     "canary": ["canary", "leak", "rag", "canaryvaults", "canaryrag", "protect", "data leak", "monitor"],
+    "design": ["design", "ui", "ux", "beautiful", "tailwind", "css", "frontend", "appearance", "style", "look"],
 }
 
 COMPLEXITY_HIGH_SIGNALS = [
@@ -79,6 +94,19 @@ NEXUS_IDENTITY_SIGNALS = [
     "this dashboard",
 ]
 
+HIVE_ROUTE_SIGNALS = [
+    "nexus hive",
+    "/hive",
+    "distributed intelligence",
+    "distributed search",
+    "swarm",
+    "mesh",
+    "parallelize",
+    "parallel search",
+    "zero cost",
+    "donate idle compute",
+]
+
 
 class MindRouter:
     """
@@ -91,9 +119,10 @@ class MindRouter:
         from nexus.config import config
 
         self.config = config
-        self.stats = {"local": 0, "cloud": 0, "agent": 0}
+        self.stats = {"local": 0, "cloud": 0, "agent": 0, "hive": 0}
         self.reflect_stats = {"clean": 0, "warning": 0, "blocked": 0, "rerouted": 0}
         self._agents = {}
+        self._hive_runtime = None
         self.context_reducer = context_reducer or build_context_reducer(
             enabled=config.context_reduction_enabled,
             backend=config.context_reduction_backend,
@@ -125,7 +154,19 @@ class MindRouter:
                 from nexus.canary.canary_agent import CanaryAgent
 
                 self._agents[name] = CanaryAgent()
+            elif name == "design":
+                from nexus.agents.design_agent import DesignAgent
+
+                self._agents[name] = DesignAgent()
         return self._agents[name]
+
+    def _get_hive_runtime(self):
+        """Lazy-load Hive runtime to avoid circular imports and cold-start cost."""
+        if self._hive_runtime is None:
+            from nexus.hive.runtime import HiveRuntime
+
+            self._hive_runtime = HiveRuntime()
+        return self._hive_runtime
 
     def classify_intent(self, task: str) -> Optional[str]:
         """Classify task intent based on keyword matching."""
@@ -171,6 +212,29 @@ class MindRouter:
             r"\bwhat should i try first\b",
         )
         return any(re.search(pattern, task_lower) for pattern in capability_patterns)
+
+    def _should_route_to_hive(
+        self,
+        *,
+        task: str,
+        intent: Optional[str],
+        complexity: float,
+        workspace_grounded: bool,
+    ) -> bool:
+        """Return True when the experimental distributed Hive route is the best fit."""
+        if not getattr(self.config, "hive_enabled", False):
+            return False
+        if workspace_grounded:
+            return False
+        if intent not in {None, "coding", "research", "design"}:
+            return False
+        task_lower = task.lower()
+        explicit_signal = any(signal in task_lower for signal in HIVE_ROUTE_SIGNALS)
+        implicit_signal = complexity >= max(self.config.routing_complexity_threshold, 0.45) and any(
+            phrase in task_lower
+            for phrase in ("subtask", "subtasks", "best answer", "multiple nodes", "many nodes", "volunteer compute")
+        )
+        return explicit_signal or implicit_signal
 
     def _workspace_root(self) -> Path:
         """Resolve the local project root for repository-grounded answers."""
@@ -312,6 +376,13 @@ class MindRouter:
         result = await Orchestrator().run_blueprint(blueprint)
         return result["final_output"]
 
+    async def _call_hive(self, task: str, intent: Optional[str]) -> tuple[str, dict]:
+        """Run the experimental Hive route and return the synthesized answer plus metadata."""
+        runtime = self._get_hive_runtime()
+        result = await runtime.demo(task, intent=intent or "coding")
+        assembled = result.get("assembled_output") or (result.get("winner") or {}).get("output") or result.get("note") or ""
+        return assembled, result
+
     async def route(self, task: str, force_agent: Optional[str] = None, return_meta: bool = False):
         """
         Route a task to the best executor and trust-gate the answer.
@@ -340,6 +411,7 @@ class MindRouter:
 
         prepared_prompt = task
         context_reduction = None
+        hive_details = None
 
         if workspace_grounded:
             initial_route = "local"
@@ -352,7 +424,23 @@ class MindRouter:
                 workspace_grounded=workspace_grounded,
             )
             initial_response = await self._call_local(prepared_prompt)
-        elif intent and intent in ["coding", "research", "memory", "file", "canary"]:
+        elif self._should_route_to_hive(
+            task=task,
+            intent=intent,
+            complexity=complexity,
+            workspace_grounded=workspace_grounded,
+        ):
+            initial_route = "hive"
+            console.print("[bold cyan]-> Routing to NEXUS Hive[/bold cyan]")
+            self.stats["hive"] += 1
+            prepared_prompt, context_reduction = self._prepare_route_prompt(
+                task,
+                route=initial_route,
+                intent=intent,
+                workspace_grounded=workspace_grounded,
+            )
+            initial_response, hive_details = await self._call_hive(prepared_prompt, intent)
+        elif intent and intent in ["coding", "research", "memory", "file", "canary", "design"]:
             initial_route = "agent"
             console.print(f"[cyan]-> Routing to {intent} agent[/cyan]")
             self.stats["agent"] += 1
@@ -365,7 +453,7 @@ class MindRouter:
             initial_response = await self._call_agent_runtime(prepared_prompt, intent)
         elif complexity < self.config.routing_complexity_threshold:
             initial_route = "local"
-            console.print(f"[green]-> Routing to local model ({self.config.nexus_model})[/green]")
+            console.print(f"[green]-> Routing to local model ({active_local_model_label(self.config)})[/green]")
             self.stats["local"] += 1
             prepared_prompt, context_reduction = self._prepare_route_prompt(
                 task,
@@ -376,7 +464,8 @@ class MindRouter:
             initial_response = await self._call_local(prepared_prompt)
         else:
             initial_route = "cloud"
-            console.print("[yellow]-> Routing to cloud model (Anthropic)[/yellow]")
+            cloud_provider = preferred_cloud_provider(self.config) or "cloud"
+            console.print(f"[yellow]-> Routing to cloud model ({cloud_provider.title()})[/yellow]")
             self.stats["cloud"] += 1
             prepared_prompt, context_reduction = self._prepare_route_prompt(
                 task,
@@ -447,48 +536,64 @@ class MindRouter:
             "initial_reflect_score": initial_assessment["score"],
             "initial_reflect_verdict": initial_assessment["verdict"],
             "workspace_grounded": workspace_grounded,
+            "hive_details": hive_details,
             "context_reduction": context_reduction.to_dict() if context_reduction is not None else None,
         }
 
     async def _call_local(self, task: str) -> str:
-        """Call the local Ollama model."""
+        """Call the configured local runtime."""
         try:
-            import httpx
-
-            async def operation() -> str:
-                async with httpx.AsyncClient(timeout=60) as client:
-                    response = await client.post(
-                        f"{self.config.ollama_base_url}/api/generate",
-                        json={"model": self.config.nexus_model, "prompt": task, "stream": False},
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
-                    text = payload.get("response", "No response from local model")
-                    log_token_usage(
-                        provider="ollama",
-                        model=self.config.nexus_model,
-                        prompt=task,
-                        response_text=text,
-                        input_tokens=payload.get("prompt_eval_count"),
-                        output_tokens=payload.get("eval_count"),
-                    )
-                    return text
-
-            return await retry_async("ollama", operation)
+            text, usage = await call_local_chat(
+                config=self.config,
+                prompt=task,
+                system=LOCAL_ROUTER_SYSTEM_PROMPT,
+            )
+            log_token_usage(
+                provider=usage.get("provider", "local"),
+                model=usage.get("model", self.config.nexus_model),
+                prompt=task,
+                response_text=text,
+                input_tokens=usage.get("prompt_tokens"),
+                output_tokens=usage.get("completion_tokens"),
+            )
+            return text
         except Exception:
             console.print("[yellow]Local model is unavailable. Trying cloud fallback.[/yellow]")
             cloud_response = await self._call_cloud(task)
             if cloud_response.startswith("Cloud model error:"):
                 return (
-                    "No model backend is available. Start Ollama with `ollama serve` "
-                    "or install/configure Anthropic for cloud fallback."
+                    "No model backend is available. Start the configured local runtime "
+                    "or configure OpenRouter or Anthropic for cloud fallback."
                 )
             return cloud_response
 
     async def _call_cloud(self, task: str) -> str:
-        """Call the Anthropic cloud model as fallback."""
+        """Call the configured cloud model as fallback."""
+        if self.config.openrouter_api_key:
+            try:
+                text, usage = await call_openrouter_chat(
+                    api_key=self.config.openrouter_api_key,
+                    model=self.config.openrouter_model,
+                    prompt=task,
+                    base_url=self.config.openrouter_base_url,
+                )
+                log_token_usage(
+                    provider="openrouter",
+                    model=self.config.openrouter_model,
+                    prompt=task,
+                    response_text=text,
+                    input_tokens=usage.get("prompt_tokens"),
+                    output_tokens=usage.get("completion_tokens"),
+                )
+                return text
+            except Exception:
+                return (
+                    "Cloud model error: OpenRouter request failed. "
+                    "Please check your OPENROUTER_API_KEY, OPENROUTER_MODEL, and network connection."
+                )
+
         if not self.config.anthropic_api_key:
-            return "Cloud model error: ANTHROPIC_API_KEY is not configured."
+            return "Cloud model error: configure OPENROUTER_API_KEY or ANTHROPIC_API_KEY."
         try:
             import anthropic
 
@@ -497,7 +602,7 @@ class MindRouter:
             async def operation() -> str:
                 message = await asyncio.to_thread(
                     client.messages.create,
-                    model="claude-sonnet-4-20250514",
+                    model="claude-sonnet-4-6",
                     max_tokens=2048,
                     messages=[{"role": "user", "content": task}],
                 )
@@ -505,7 +610,7 @@ class MindRouter:
                 usage = getattr(message, "usage", None)
                 log_token_usage(
                     provider="anthropic",
-                    model="claude-sonnet-4-20250514",
+                    model="claude-sonnet-4-6",
                     prompt=task,
                     response_text=text,
                     input_tokens=getattr(usage, "input_tokens", None),
@@ -528,8 +633,9 @@ class MindRouter:
         table.add_column("Metric", style="cyan")
         table.add_column("Count", style="green")
         table.add_row("Local (CompressX)", str(self.stats["local"]))
-        table.add_row("Cloud (Anthropic)", str(self.stats["cloud"]))
+        table.add_row(f"Cloud ({(preferred_cloud_provider(self.config) or 'none').title()})", str(self.stats["cloud"]))
         table.add_row("Agent", str(self.stats["agent"]))
+        table.add_row("Hive", str(self.stats["hive"]))
         table.add_row("Reflect Clean", str(self.reflect_stats["clean"]))
         table.add_row("Reflect Warning", str(self.reflect_stats["warning"]))
         table.add_row("Reflect Blocked", str(self.reflect_stats["blocked"]))

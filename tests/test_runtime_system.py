@@ -5,6 +5,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from nexus.agents.base_agent import BaseAgent
 from nexus.agents.coding_agent import CodingAgent
@@ -228,6 +229,18 @@ class AlwaysHighConfidenceScorer:
         }
 
 
+class NeutralReflectScorer:
+    async def assess_response(self, question: str, response: str) -> dict:
+        return {
+            "score": 0.5,
+            "verdict": "clean",
+            "action": "serve",
+            "warning": None,
+            "should_warn": False,
+            "should_reroute": False,
+        }
+
+
 class FastPassCritic(BaseCritic):
     def __init__(self, name: str, score: float, weight: float):
         self.name = name
@@ -438,6 +451,68 @@ class PlannerEngineTests(unittest.TestCase):
         self.assertEqual(solution_task.metadata["project_frameworks"], ["react", "vite"])
         self.assertEqual(solution_task.retry_strategy, "plan_modification")
         self.assertEqual(solution_task.agent, "coding")
+
+    def test_project_mode_bugfix_skips_research_context_even_with_summary_request(self):
+        parser = IntentParser()
+        project_context = {
+            "enabled": True,
+            "project_root": "D:/bugfix-repo",
+            "project_signature": "bugfix-123",
+            "project_context": {
+                "frameworks": [],
+                "languages": ["python"],
+                "entrypoints": [],
+                "files": [
+                    {"path": "math_utils.py", "size": 144},
+                    {"path": "tests/test_math_utils.py", "size": 233},
+                    {"path": "README.md", "size": 239},
+                ],
+            },
+        }
+        intent = parser.parse(
+            "Fix the failing unit test in this repository without changing the test intent. Run the relevant tests and summarize exactly what changed.",
+            project_context=project_context,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            planner = PlannerEngine(skill_memory=SkillMemory(storage_path=Path(temp_dir) / "skill_memory.json"))
+            plan = planner.plan(intent, project_context=project_context)
+
+        task_types = [task.task_type for task in plan.tasks]
+        self.assertNotIn("research_context", task_types)
+        self.assertEqual(task_types[0], "solution")
+
+    def test_project_mode_small_repo_coding_tasks_get_more_time(self):
+        parser = IntentParser()
+        project_context = {
+            "enabled": True,
+            "project_root": "D:/bugfix-repo",
+            "project_signature": "bugfix-123",
+            "project_context": {
+                "frameworks": [],
+                "languages": ["python"],
+                "entrypoints": [],
+                "files": [
+                    {"path": "math_utils.py", "size": 144},
+                    {"path": "tests/test_math_utils.py", "size": 233},
+                    {"path": "README.md", "size": 239},
+                ],
+            },
+            "common_errors": [{"failure_type": "timeout", "summary": "task timed out after 30s"}],
+        }
+        intent = parser.parse(
+            "Fix the failing unit test in this repository without changing the test intent.",
+            project_context=project_context,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            planner = PlannerEngine(skill_memory=SkillMemory(storage_path=Path(temp_dir) / "skill_memory.json"))
+            plan = planner.plan(intent, project_context=project_context)
+
+        solution_task = next(task for task in plan.tasks if task.task_type == "solution")
+        test_task = next(task for task in plan.tasks if task.task_type == "test_generation")
+        self.assertGreaterEqual(solution_task.timeout_seconds, 75)
+        self.assertGreaterEqual(test_task.timeout_seconds, 60)
 
 
 class SkillMemoryTests(unittest.TestCase):
@@ -677,6 +752,95 @@ class CodingAgentTests(unittest.TestCase):
         self.assertEqual(tool_request["type"], "tool_call")
         self.assertEqual(tool_request["tool"], "file_tool")
 
+    def test_autonomous_prompt_includes_workspace_previews_for_bugfixes(self):
+        agent = CodingAgent()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace_root = Path(temp_dir) / "workspace"
+            workspace_root.mkdir()
+            (workspace_root / "math_utils.py").write_text(
+                "def scale_then_add(value, delta):\n    return value * 2 - delta\n",
+                encoding="utf-8",
+            )
+            memory = SharedMemory(root_dir=Path(temp_dir) / "memory")
+            memory.put("workspace.root_dir", str(workspace_root))
+            memory.put(
+                "workspace.project_state",
+                {
+                    "files": [
+                        {
+                            "path": "math_utils.py",
+                            "size": 62,
+                            "preview": "def scale_then_add(value, delta):\n    return value * 2 - delta\n",
+                        },
+                        {
+                            "path": "tests/test_math_utils.py",
+                            "size": 90,
+                            "preview": "self.assertEqual(scale_then_add(3, 4), 10)\n",
+                        },
+                    ]
+                },
+            )
+            response_text = (
+                "`math_utils.py`\n"
+                "```python\n"
+                "def scale_then_add(value, delta):\n"
+                "    return value * 2 + delta\n"
+                "```\n"
+            )
+            with patch.object(agent, "_call_local", new=AsyncMock(return_value=response_text)) as mocked_call:
+                tool_request = asyncio.run(
+                    agent.act(
+                        "Task type: solution\nFix the failing unit test without changing the test intent.",
+                        memory=memory,
+                    )
+                )
+
+        prompt = mocked_call.await_args.args[0]
+        self.assertIn("Existing workspace files:", prompt)
+        self.assertIn("Preview: def scale_then_add", prompt)
+        self.assertIn("Preview: self.assertEqual(scale_then_add(3, 4), 10)", prompt)
+        self.assertEqual(tool_request["tool"], "file_tool")
+
+    def test_validation_commands_run_unittest_for_existing_python_tests(self):
+        agent = CodingAgent()
+        actions = agent._validation_commands(
+            artifacts=[],
+            workspace_root=Path("D:/demo"),
+            task_type="solution",
+            task="Fix the failing unit test and run the relevant tests.",
+            project_state={
+                "files": [
+                    {"path": "math_utils.py", "size": 62},
+                    {"path": "tests/test_math_utils.py", "size": 90},
+                ]
+            },
+        )
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["tool"], "terminal_tool")
+        self.assertEqual(
+            actions[0]["arguments"]["command"],
+            ["python", "-m", "unittest", "discover", "-s", "tests", "-v"],
+        )
+
+    def test_allowed_workspace_paths_exposes_exact_repo_paths(self):
+        agent = CodingAgent()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = SharedMemory(root_dir=Path(temp_dir) / "memory")
+            memory.put(
+                "workspace.project_state",
+                {
+                    "files": [
+                        {"path": "math_utils.py", "size": 62},
+                        {"path": "tests/test_math_utils.py", "size": 90},
+                    ]
+                },
+            )
+
+            allowed_paths = agent._allowed_workspace_paths(memory)
+
+        self.assertEqual(allowed_paths, ["math_utils.py", "tests/test_math_utils.py"])
+
 
 class MultiCriticTests(unittest.TestCase):
     def test_combines_critic_scores(self):
@@ -703,6 +867,44 @@ class MultiCriticTests(unittest.TestCase):
         self.assertIn("safety", result["critic_scores"])
         self.assertFalse(result["ok"])
         self.assertEqual(result["failure_type"], "low_confidence")
+
+    def test_tool_verified_success_avoids_low_confidence_failure(self):
+        task = TaskBlueprint(
+            id="coding_1",
+            task_type="solution",
+            agent="coding",
+            instruction="Fix the repo and validate the tests",
+            confidence_threshold=0.65,
+        )
+        evaluator = MultiCriticEvaluator(reflect_scorer=NeutralReflectScorer())
+        result = asyncio.run(
+            evaluator.evaluate(
+                task=task,
+                output="Autonomous coding run completed in D:/repo. Last step: Command succeeded (0): python -m unittest discover -s tests -v",
+                observation={
+                    "ok": True,
+                    "summary": "Command succeeded (0): python -m unittest discover -s tests -v",
+                    "tool_actions": [
+                        {
+                            "tool": "file_tool",
+                            "ok": True,
+                            "action": "edit_file",
+                        },
+                        {
+                            "tool": "terminal_tool",
+                            "ok": True,
+                            "action": "run_command",
+                        },
+                    ],
+                },
+                attempt=1,
+                max_attempts=2,
+            )
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertGreaterEqual(result["critic_scores"]["correctness"], 0.8)
+        self.assertIsNone(result["failure_type"])
 
     def test_lazy_evaluation_reuses_cached_high_confidence_critic(self):
         expensive = CountingExpensiveCritic()
@@ -927,6 +1129,42 @@ console.log("hello");
             self.assertEqual(len(result.files_written), 2)
             self.assertTrue((result.root_dir / "package.json").exists())
             self.assertEqual((result.root_dir / "src" / "index.js").read_text(encoding="utf-8"), 'console.log("hello");')
+
+    def test_extracts_bold_filename_blocks(self):
+        artifacts = BuildArtifactMaterializer().extract(
+            """**math_utils.py**
+```python
+def scale_then_add(value, delta):
+    return value * 2 + delta
+```
+
+**tests/test_math_utils.py**
+```python
+import unittest
+```
+"""
+        )
+
+        self.assertEqual(len(artifacts), 2)
+        self.assertEqual(artifacts[0].relative_path.as_posix(), "math_utils.py")
+        self.assertIn("return value * 2 + delta", artifacts[0].content)
+        self.assertEqual(artifacts[1].relative_path.as_posix(), "tests/test_math_utils.py")
+
+    def test_extracts_fenced_filename_blocks(self):
+        artifacts = BuildArtifactMaterializer().extract(
+            """```text
+math_utils.py
+```
+```python
+def scale_then_add(value, delta):
+    return value * 2 + delta
+```
+"""
+        )
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].relative_path.as_posix(), "math_utils.py")
+        self.assertIn("return value * 2 + delta", artifacts[0].content)
 
     def test_default_output_dir_uses_file_tree_root(self):
         materializer = BuildArtifactMaterializer()

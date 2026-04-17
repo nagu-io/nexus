@@ -576,10 +576,19 @@ Run Instructions:
         """Turn a coding goal into sequential file writes and validation commands."""
         workspace_root = Path(memory.get("workspace.root_dir")).resolve()
         task_type = self._task_type_from_prompt(task)
+        project_state = memory.get("workspace.project_state") or {}
         scaffold_text = await self._generate_autonomous_artifacts(task, memory, task_type=task_type)
         artifacts = self._artifact_materializer.extract(scaffold_text)
         actions = self._artifacts_to_tool_calls(artifacts, workspace_root)
-        actions.extend(self._validation_commands(artifacts, workspace_root, task_type=task_type))
+        actions.extend(
+            self._validation_commands(
+                artifacts,
+                workspace_root,
+                task_type=task_type,
+                task=task,
+                project_state=project_state,
+            )
+        )
         return {
             "workspace_root": str(workspace_root),
             "scaffold_text": scaffold_text,
@@ -598,14 +607,37 @@ Run Instructions:
         if deterministic:
             return deterministic
 
+        workspace_root = Path(memory.get("workspace.root_dir")).resolve()
+        existing_files = self._workspace_file_context(memory)
+        allowed_paths = self._allowed_workspace_paths(memory)
+        task_lower = task.lower()
+        repair_guidance = ""
+        if any(token in task_lower for token in ("fix", "debug", "bug", "failing test", "unit test")):
+            repair_guidance = (
+                "Prefer the smallest grounded fix that preserves the existing project structure.\n"
+                "If tests already exist, keep their intent and update implementation files first.\n"
+            )
+        path_guidance = ""
+        if allowed_paths:
+            path_guidance = (
+                "When editing an existing file, the path line must match the workspace exactly.\n"
+                f"Allowed existing paths: {', '.join(allowed_paths[:12])}\n"
+                "Never invent placeholder paths like relative/path.ext or labels like Updated math_utils.py.\n"
+            )
         prompt = (
-            "You are generating a project inside a coding workspace.\n"
+            "You are generating or repairing files inside an existing coding workspace.\n"
+            "Treat the provided workspace file previews as the source of truth for the current codebase.\n"
+            "Only modify files that are necessary for the task.\n"
+            f"{repair_guidance}"
+            f"{path_guidance}"
             "Return only:\n"
             "1. a short architecture note\n"
             "2. path-tagged fenced code blocks for every file that should exist, using this exact format:\n"
             "`relative/path.ext`\n```language\n...\n```\n"
             "3. a short run note at the end if needed.\n"
             "Do not include placeholders, ellipses, or omitted sections.\n\n"
+            f"Workspace root:\n{workspace_root}\n\n"
+            f"Existing workspace files:\n{existing_files}\n\n"
             f"{task}"
         )
         return await self._call_local(prompt)
@@ -677,10 +709,24 @@ Run Instructions:
             "replace_all": False,
         }
 
-    def _validation_commands(self, artifacts: list, workspace_root: Path, *, task_type: str = "solution") -> list[dict]:
+    def _validation_commands(
+        self,
+        artifacts: list,
+        workspace_root: Path,
+        *,
+        task_type: str = "solution",
+        task: str = "",
+        project_state: dict | None = None,
+    ) -> list[dict]:
         """Derive safe validation commands from the generated project files."""
         actions: list[dict] = []
         artifact_map = {artifact.relative_path.as_posix(): artifact for artifact in artifacts}
+        known_paths = {artifact.relative_path.as_posix().lower() for artifact in artifacts}
+        known_paths.update(
+            str(item.get("path", "")).replace("\\", "/").lower()
+            for item in (project_state or {}).get("files", [])
+            if item.get("path")
+        )
         package_artifact = artifact_map.get("package.json")
         if package_artifact:
             actions.append(
@@ -731,6 +777,31 @@ Run Instructions:
                 )
                 return actions
 
+        if self._task_mentions_tests(task):
+            if "package.json" in known_paths:
+                actions.append(
+                    self.tool_call(
+                        tool="terminal_tool",
+                        action="run_command",
+                        command=["npm", "test"],
+                        cwd=str(workspace_root),
+                        timeout_seconds=120,
+                    )
+                )
+                return actions
+            python_test_command = self._python_test_command(known_paths)
+            if python_test_command:
+                actions.append(
+                    self.tool_call(
+                        tool="terminal_tool",
+                        action="run_command",
+                        command=python_test_command,
+                        cwd=str(workspace_root),
+                        timeout_seconds=120,
+                    )
+                )
+                return actions
+
         js_files = [
             artifact.relative_path.as_posix()
             for artifact in artifacts
@@ -761,12 +832,13 @@ Run Instructions:
                     )
                 )
                 return actions
-            if has_py_tests:
+            python_test_command = self._python_test_command(known_paths)
+            if has_py_tests or python_test_command:
                 actions.append(
                     self.tool_call(
                         tool="terminal_tool",
                         action="run_command",
-                        command=["python", "-m", "pytest"],
+                        command=python_test_command or ["python", "-m", "unittest", "-v"],
                         cwd=str(workspace_root),
                         timeout_seconds=120,
                     )
@@ -794,6 +866,62 @@ Run Instructions:
             )
         return actions
 
+    def _workspace_file_context(self, memory, *, max_files: int = 12) -> str:
+        project_state = memory.get("workspace.project_state") or {}
+        entries = []
+        for item in (project_state.get("files") or [])[:max_files]:
+            path = item.get("path")
+            if not path:
+                continue
+            size = item.get("size", 0)
+            preview = str(item.get("preview", "") or "").replace("```", "'''").strip()
+            entries.append(f"- {path} ({size} bytes)")
+            if preview:
+                entries.append(f"  Preview: {preview}")
+        return "\n".join(entries) if entries else "- No file previews were available."
+
+    def _allowed_workspace_paths(self, memory, *, max_files: int = 20) -> list[str]:
+        project_state = memory.get("workspace.project_state") or {}
+        paths = []
+        for item in (project_state.get("files") or [])[:max_files]:
+            path = str(item.get("path", "")).replace("\\", "/").strip()
+            if path:
+                paths.append(path)
+        return paths
+
+    def _task_mentions_tests(self, task: str) -> bool:
+        lowered = task.lower()
+        return any(
+            token in lowered
+            for token in (
+                "failing test",
+                "unit test",
+                "tests",
+                "test intent",
+                "run the relevant tests",
+            )
+        )
+
+    def _python_test_command(self, known_paths: set[str]) -> list[str] | None:
+        python_test_paths = [
+            path
+            for path in known_paths
+            if path.endswith(".py")
+            and (
+                path.startswith("tests/")
+                or "/tests/" in path
+                or Path(path).name.startswith("test_")
+            )
+        ]
+        if not python_test_paths:
+            return None
+        pytest_markers = {"pytest.ini", "conftest.py"}
+        if known_paths & pytest_markers:
+            return ["python", "-m", "pytest"]
+        if any(path.startswith("tests/") for path in python_test_paths):
+            return ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
+        return ["python", "-m", "unittest", "-v"]
+
     async def _plan_fix_actions(self, task: str, memory, tool_result: dict) -> list[dict]:
         """Use terminal feedback plus workspace state to generate corrective edits."""
         workspace_root = Path(memory.get("workspace.root_dir")).resolve()
@@ -814,6 +942,13 @@ Run Instructions:
             f"stdout:\n{tool_result.get('stdout', '')}\n\n"
             f"Workspace files:\n{file_summaries}\n"
         )
+        allowed_paths = self._allowed_workspace_paths(memory)
+        if allowed_paths:
+            prompt += (
+                "\nWhen editing an existing file, use the exact relative path from this list:\n"
+                f"{', '.join(allowed_paths[:12])}\n"
+                "Never invent placeholder paths like relative/path.ext or labels like Updated math_utils.py.\n"
+            )
         if self._task_type_from_prompt(task) == "test_generation":
             prompt += (
                 "\nDo not rewrite or weaken the tests unless they are syntactically invalid. "

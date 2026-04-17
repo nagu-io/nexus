@@ -284,12 +284,47 @@ class PlannerEngine:
         required_agents: list[str],
     ) -> bool:
         """Avoid slow research hops for implementation-heavy build requests."""
+        lowered = intent.goal.lower()
+        project_context = intent.metadata.get("project_context") or {}
+        project_scan = project_context.get("project_context") or {}
+        project_mode_enabled = bool(project_context.get("enabled"))
+        project_file_count = len(project_scan.get("files", []) or [])
+
+        explicit_research_signals = {
+            "search",
+            "latest",
+            "news",
+            "research",
+            "compare",
+            "investigate",
+            "web",
+            "internet",
+        }
+        repo_bugfix_signals = {
+            "fix",
+            "debug",
+            "failing test",
+            "unit test",
+            "test failure",
+            "without changing the test",
+            "summarize exactly what changed",
+            "what changed",
+        }
+
+        if (
+            project_mode_enabled
+            and intent.primary_intent == "coding"
+            and project_file_count <= 40
+            and any(signal in lowered for signal in repo_bugfix_signals)
+            and not any(signal in lowered for signal in explicit_research_signals)
+        ):
+            return False
+
         if "research" in required_agents:
             return True
         if intent.primary_intent != "coding" or intent.complexity != "high":
             return False
 
-        lowered = intent.goal.lower()
         implementation_signals = {
             "build",
             "create",
@@ -387,6 +422,11 @@ class PlannerEngine:
         preferences = dict(project_context.get("user_preferences", {}))
         recent_goals = list(project_context.get("recent_goals", []))
         common_errors = list(project_context.get("common_errors", []))
+        project_file_count = len(project_scan.get("files", []))
+        timeout_heavy_project = any(
+            error.get("failure_type") == "timeout" or "timeout" in str(error.get("summary", "")).lower()
+            for error in common_errors
+        )
         preferred_pattern = self._best_project_pattern(project_context, primary_intent=intent.primary_intent)
 
         for task in tasks:
@@ -418,6 +458,11 @@ class PlannerEngine:
                         error.get("failure_type", "runtime_error")
                         for error in common_errors[:3]
                     ]
+            if task.agent == "coding" and project_file_count <= 40:
+                if task.task_type == "solution":
+                    task.timeout_seconds = max(task.timeout_seconds, 75 if timeout_heavy_project else 60)
+                elif task.task_type == "test_generation":
+                    task.timeout_seconds = max(task.timeout_seconds, 60 if timeout_heavy_project else 45)
             if preferred_pattern and task.task_type == "solution":
                 task.metadata["project_pattern_signal"] = "reused_project_pattern"
                 best_sequence = list(preferred_pattern.get("best_agent_sequence", []))

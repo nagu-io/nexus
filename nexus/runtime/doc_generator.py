@@ -27,6 +27,13 @@ class DocumentationResult:
 class DocGenerator:
     """Generate lightweight project docs from workflow context."""
 
+    MANAGED_README_NAME = "README.md"
+    MANAGED_ARCHITECTURE_NAME = "ARCHITECTURE.md"
+    PROJECT_DOCS_DIRNAME = ".nexus"
+    PROJECT_DOCS_SUBDIR = "docs"
+    PROJECT_README_NAME = "README.nexus.md"
+    PROJECT_ARCHITECTURE_NAME = "ARCHITECTURE.nexus.md"
+
     COMMENT_PREFIXES = {
         ".py": "#",
         ".sh": "#",
@@ -60,8 +67,12 @@ class DocGenerator:
         workspace_root = Path(workspace_root).expanduser().resolve()
         workspace_root.mkdir(parents=True, exist_ok=True)
 
-        readme_path = workspace_root / "README.md"
-        architecture_path = workspace_root / "ARCHITECTURE.md"
+        readme_path, architecture_path = self._documentation_paths(
+            workspace_root=workspace_root,
+            managed_workspace=managed_workspace,
+        )
+        readme_path.parent.mkdir(parents=True, exist_ok=True)
+        architecture_path.parent.mkdir(parents=True, exist_ok=True)
 
         readme_path.write_text(
             self._build_readme(
@@ -92,6 +103,24 @@ class DocGenerator:
             readme_path=str(readme_path),
             architecture_path=str(architecture_path),
             annotated_files=annotated_files,
+        )
+
+    def _documentation_paths(
+        self,
+        *,
+        workspace_root: Path,
+        managed_workspace: bool,
+    ) -> tuple[Path, Path]:
+        if managed_workspace:
+            return (
+                workspace_root / self.MANAGED_README_NAME,
+                workspace_root / self.MANAGED_ARCHITECTURE_NAME,
+            )
+
+        docs_root = workspace_root / self.PROJECT_DOCS_DIRNAME / self.PROJECT_DOCS_SUBDIR
+        return (
+            docs_root / self.PROJECT_README_NAME,
+            docs_root / self.PROJECT_ARCHITECTURE_NAME,
         )
 
     def _build_readme(
