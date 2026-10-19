@@ -115,7 +115,9 @@ def load_options(torch: Any, load_4bit: str) -> dict[str, Any]:
             load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=_compute_dtype(torch)
         )
         options["device_map"] = {"": 0}
-        options.pop("dtype")
+        # The layers that stay whole (embeddings, norms, the vision tower) use this too. Left out,
+        # transformers 4.57 picks float16 for them even on a card with bfloat16, where float16 can overflow.
+        options["dtype"] = _compute_dtype(torch)
     return options
 
 
@@ -140,6 +142,14 @@ class LocalVision(VisionModel):
         self._model: Any = None
         self._processor: Any = None
         self._lock = threading.RLock()
+        # The last answer as generated: how many new tokens, and their text with the special tokens left in,
+        # so an answer that is only an end-of-turn marker can be told from one that failed.
+        self.last_generation: dict[str, Any] = {}
+
+    def load(self) -> None:
+        """Load the model now rather than at the first question (so the first answer is not timed with the load)."""
+        with self._lock:
+            self._load()
 
     def _load(self) -> None:
         if self._model is not None:
@@ -187,6 +197,7 @@ class LocalVision(VisionModel):
 
     def _generate(self, system: str, text: str, image: bytes, adapter: bool) -> str:
         with self._lock:  # watch mode and requests share one model: one generation at a time
+            self.last_generation = {}
             self._load()
             import torch  # type: ignore
             from PIL import Image  # type: ignore
@@ -200,13 +211,13 @@ class LocalVision(VisionModel):
                 return_tensors="pt",
             ).to(self._model.device)
             without_adapter = not adapter and hasattr(self._model, "disable_adapter")
-            # Generate with the model underneath PEFT's wrapper: the adapter's layers are inside it, so they
-            # still apply, but generation runs exactly as for the base model (PEFT's own generate rewrites the
-            # inputs, which some PEFT and transformers versions get wrong for Qwen3-VL's images).
-            generator = self._model.get_base_model() if hasattr(self._model, "get_base_model") else self._model
             with torch.inference_mode(), (self._model.disable_adapter() if without_adapter else contextlib.nullcontext()):
-                output = generator.generate(**inputs, max_new_tokens=self.max_new_tokens, do_sample=False)
+                output = self._model.generate(**inputs, max_new_tokens=self.max_new_tokens, do_sample=False)
             new_tokens = output[:, inputs["input_ids"].shape[1] :]
+            self.last_generation = {
+                "new_tokens": int(new_tokens.shape[1]),
+                "raw": self._processor.batch_decode(new_tokens, skip_special_tokens=False)[0],
+            }
             return self._processor.batch_decode(new_tokens, skip_special_tokens=True)[0]
 
     def close(self) -> None:

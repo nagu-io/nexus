@@ -217,6 +217,19 @@ class LoadOptionsTests(unittest.TestCase):
     def test_no_graphics_card_keeps_the_model_s_own_format(self):
         self.assertEqual(self.options(cuda=False), {"dtype": "auto"})
 
+    @unittest.skipUnless(importlib.util.find_spec("transformers"), "needs transformers")
+    def test_a_4_bit_model_keeps_the_card_s_number_format_for_its_other_layers(self):
+        # Left out, transformers 4.57 put the embeddings, norms and vision tower in float16 on a card
+        # with bfloat16, where float16 can overflow.
+        for capability, expected in (((8, 6), "bfloat16"), ((7, 5), "float16")):
+            with self.subTest(capability=capability):
+                torch = fake_torch(capability=capability, memory_gb=4)
+                with mock.patch.dict(sys.modules, {"torch": torch}):
+                    options = local.load_options(torch, "on")
+                self.assertEqual(options["dtype"], expected)
+                self.assertEqual(options["device_map"], {"": 0})
+                self.assertTrue(str(options["quantization_config"].bnb_4bit_compute_dtype).endswith(expected))
+
 
 class CudaTorchCheckTests(unittest.TestCase):
     def lines(self, gpu, cuda):

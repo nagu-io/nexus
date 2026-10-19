@@ -176,6 +176,64 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(len(grades[0].raw), 300)  # what was said is kept, cut short
         self.assertEqual(grades[4].raw, answer(action="done", say="ok"))
 
+    def test_what_was_generated_is_kept_and_shown(self):
+        # An answer that is only the end-of-turn marker decodes to "": the token count tells it from a failure.
+        class Generating(FakeModel):
+            def _chat(self, system, text, image, schema):
+                self.last_generation = {"new_tokens": 1, "raw": "<|im_end|>"}
+                return super()._chat(system, text, image, schema)
+
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "images").mkdir()
+            (Path(folder) / "images" / "a.png").write_bytes(b"PNG")
+            items = [(Path(folder), example({"action": "done", "say": "x"}))]
+            lines = []
+            summary, grades = evaluate(Generating([""]), items, printer=lines.append)
+        self.assertEqual((grades[0].tokens, grades[0].raw_tokens), (1, "<|im_end|>"))
+        self.assertIn("| 1 new tokens: '<|im_end|>'", lines[0])
+
+    def test_a_failed_question_keeps_no_generation_from_before(self):
+        class Failing(FakeModel):
+            last_generation = {"new_tokens": 9, "raw": "old"}
+
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "images").mkdir()
+            (Path(folder) / "images" / "a.png").write_bytes(b"PNG")
+            items = [(Path(folder), example({"action": "done", "say": "x"}))]
+            _, grades = evaluate(Failing([RuntimeError("out of memory")]), items, printer=lambda line: None)
+        self.assertIsNone(grades[0].tokens)
+
+    def test_the_model_is_loaded_before_the_clock_starts(self):
+        # seconds_per_step was a mean that included loading the model, which hid how fast answers failed.
+        order = []
+
+        class Loading(FakeModel):
+            def load(self):
+                order.append("load")
+
+            def _chat(self, system, text, image, schema):
+                order.append("ask")
+                return super()._chat(system, text, image, schema)
+
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "images").mkdir()
+            (Path(folder) / "images" / "a.png").write_bytes(b"PNG")
+            items = [(Path(folder), example({"action": "done", "say": "x"}, id=str(index))) for index in range(2)]
+            evaluate(Loading([answer(action="done", say="y")] * 2), items, printer=lambda line: None)
+        self.assertEqual(order, ["load", "ask", "ask"])
+
+    def test_a_load_that_fails_is_graded_with_each_question(self):
+        class Broken(FakeModel):
+            def load(self):
+                raise RuntimeError("no model here")
+
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "images").mkdir()
+            (Path(folder) / "images" / "a.png").write_bytes(b"PNG")
+            items = [(Path(folder), example({"action": "done", "say": "x"}))]
+            _, grades = evaluate(Broken([RuntimeError("no model here")]), items, printer=lambda line: None)
+        self.assertIn("no model here", grades[0].error)
+
     def test_limit(self):
         with tempfile.TemporaryDirectory() as folder:
             (Path(folder) / "images").mkdir()

@@ -206,6 +206,27 @@ class NonFiniteLoss(Exception):
     """The training loss became NaN or infinite: the numbers overflowed."""
 
 
+def free_memory() -> None:
+    """Give back the memory of models no longer used, on the graphics card too.
+
+    A trained model is not freed when the last name for it goes: accelerate's
+    mixed precision leaves it in a reference cycle (its forward is a method
+    bound to itself), which only the garbage collector breaks. Without this,
+    NEXUS Vision is evaluated next to the model it was trained from, which a
+    4 GB card has no room for.
+    """
+    import gc
+
+    gc.collect()
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
 def loss_is_bad(logs: dict[str, Any] | None) -> bool:
     loss = (logs or {}).get("loss")
     return isinstance(loss, (int, float)) and not math.isfinite(loss)
@@ -323,6 +344,8 @@ def train(options: TrainOptions, printer: Callable[[str], None] = print) -> Trai
     model.save_pretrained(out)
     processor.save_pretrained(out)
     write_card(out, options.base, options.max_width)
+    del model, processor
+    free_memory()
     result = TrainResult(
         out=out,
         train_examples=len(train_items),
@@ -350,8 +373,6 @@ def _fit(
     printer: Callable[[str], None],
 ) -> tuple[Any, Any, Any, float | None]:
     """One training run at ``precision``: the adapter-wrapped model, the processor, the run's output, the held-out loss."""
-    import gc
-
     import torch  # type: ignore
     from transformers import Trainer, TrainingArguments  # type: ignore
 
@@ -378,6 +399,9 @@ def _fit(
         weight_decay=0.0,
         logging_steps=options.log_steps,
         logging_first_step=True,  # an overflow shows up at once, not ten steps in
+        # Report NaN and infinite losses as they are. By default Trainer logs the running average in their
+        # place, so a run that overflowed from the first step logged 0.0 and finished "normally".
+        logging_nan_inf_filter=False,
         save_strategy="steps",
         save_steps=options.save_steps,
         save_total_limit=2,
@@ -402,16 +426,16 @@ def _fit(
     )
     printer(f"About {steps_per_epoch} steps per epoch.")
     output = trainer.train()
-    if guard.tripped:
-        del trainer, model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        raise NonFiniteLoss()
+    overflowed = guard.tripped or (output.training_loss is not None and not math.isfinite(output.training_loss))
     eval_loss = None
-    if eval_items:
+    if eval_items and not overflowed:
         eval_loss = float(trainer.evaluate()["eval_loss"])
         printer(f"Held-out loss: {eval_loss:.4f}")
+        overflowed = not math.isfinite(eval_loss)
+    if overflowed:
+        del trainer, model
+        free_memory()
+        raise NonFiniteLoss()
     return model, processor, output, eval_loss
 
 

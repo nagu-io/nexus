@@ -20,6 +20,96 @@ def hotkey_words(hotkey: str) -> str:
     return "+".join(part.capitalize() if len(part) > 1 else part.upper() for part in parts)
 
 
+# pynput's names for the modifiers, as NEXUS Live's key names.
+_MODIFIER_NAMES = {
+    "ctrl": "ctrl", "ctrl_l": "ctrl", "ctrl_r": "ctrl",
+    "alt": "alt", "alt_l": "alt", "alt_r": "alt", "alt_gr": "alt",
+    "shift": "shift", "shift_l": "shift", "shift_r": "shift",
+    "cmd": "win", "cmd_l": "win", "cmd_r": "win",
+}
+
+
+def hotkey_keys(hotkey: str) -> tuple[frozenset[str], str]:
+    """'<ctrl>+<alt>+y' as ({'ctrl', 'alt'}, 'y'): its modifiers, and the key that sets it off."""
+    parts = [part.strip().strip("<>").lower() for part in hotkey.split("+") if part.strip()]
+    if not parts:
+        return frozenset(), ""
+    return frozenset(_MODIFIER_NAMES.get(part, part) for part in parts[:-1]), parts[-1]
+
+
+_NAMED_KEYS = {"space": 0x20, "enter": 0x0D, "esc": 0x1B, "tab": 0x09, "backspace": 0x08, "delete": 0x2E, "insert": 0x2D}
+_NAMED_KEYS.update({f"f{number}": 0x6F + number for number in range(1, 13)})
+
+WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x0100, 0x0101, 0x0104, 0x0105
+
+
+def _virtual_key(name: str) -> int | None:
+    if len(name) == 1 and name.isascii() and name.isalnum():
+        return ord(name.upper())
+    return _NAMED_KEYS.get(name)
+
+
+def hotkey_filter(
+    callbacks: dict[str, Callable[[], None]],
+    listener: Callable[[], Any],
+    held: Callable[[], frozenset[str] | None] | None = None,
+) -> Callable[[int, Any], bool]:
+    """A pynput ``win32_event_filter`` that keeps NEXUS Live's hotkeys to itself, on Windows.
+
+    pynput's hotkeys hear keys without taking them, so Ctrl+Alt+Y also reaches
+    the window being worked on: a shortcut there, or a character on keyboards
+    with AltGr (where Ctrl+Alt+Q is @). Here, when the last key of a hotkey
+    goes down with its modifiers held, the hotkey's callback is started and
+    the key goes no further, to that window or to pynput.
+    """
+    if held is None:
+        from nexus.live.executor import held_modifiers
+
+        held = held_modifiers
+    table: dict[int, list[tuple[frozenset[str], Callable[[], None]]]] = {}
+    for hotkey, callback in callbacks.items():
+        modifiers, last = hotkey_keys(hotkey)
+        code = _virtual_key(last)
+        if code is not None and modifiers:
+            table.setdefault(code, []).append((modifiers, callback))
+    down: set[int] = set()
+
+    def judge(message: int, data: Any) -> tuple[bool, Callable[[], None] | None]:
+        code = int(data.vkCode)
+        entries = table.get(code)
+        if not entries:
+            return False, None
+        if message in (WM_KEYUP, WM_SYSKEYUP):
+            if code in down:
+                down.discard(code)
+                return True, None
+            return False, None
+        if message not in (WM_KEYDOWN, WM_SYSKEYDOWN):
+            return False, None
+        pressed = held() or frozenset()
+        for modifiers, callback in entries:
+            if pressed == modifiers:
+                if code in down:  # the key repeating while held: taken, but the hotkey fires once
+                    return True, None
+                down.add(code)
+                return True, callback
+        return False, None
+
+    def event_filter(message: int, data: Any) -> bool:
+        try:
+            suppress, callback = judge(message, data)
+        except Exception:  # never let a mistake here cost the hotkeys
+            return True
+        if callback is not None:
+            # On its own thread: a keyboard hook must return quickly, or Windows removes it.
+            threading.Thread(target=callback, name="nexus-live-hotkey", daemon=True).start()
+        if suppress:
+            listener().suppress_event()  # raises: the key goes no further
+        return True
+
+    return event_filter
+
+
 def _default_engine() -> Any:
     if platform.system() == "Windows":
         try:  # the speech engine is a COM object, made on the thread that uses it

@@ -41,6 +41,8 @@ class Grade:
     seconds: float = 0.0
     error: str = ""
     raw: str = ""  # the start of what the model said, to see why an answer was wrong
+    tokens: int | None = None  # how many tokens it generated (local models)
+    raw_tokens: str = ""  # those tokens with the special ones left in: an answer of only <|im_end|> is not a failure
 
 
 SHOWN = 3  # invalid answers and errors printed per model, so a run's log says what went wrong
@@ -116,6 +118,12 @@ def evaluate(
 ) -> tuple[dict[str, Any], list[Grade]]:
     grades: list[Grade] = []
     chosen = items if limit is None else items[:limit]
+    load = getattr(model, "load", None)
+    if callable(load):
+        try:
+            load()  # before the clock starts: seconds per step is answering, not loading
+        except Exception:
+            pass  # the first question fails the same way, and is graded with the reason
     for number, (folder, example) in enumerate(chosen, start=1):
         image = (Path(folder) / example.image).read_bytes()
         conversation = [(who, what) for who, what in example.conversation]
@@ -130,9 +138,14 @@ def evaluate(
         result = grade(example, raw, time.monotonic() - started)
         if failure:
             result.error = failure
+        generation = getattr(model, "last_generation", None) or {}
+        if not failure and generation:
+            result.tokens = generation.get("new_tokens")
+            result.raw_tokens = str(generation.get("raw", ""))[:RAW_KEPT]
         grades.append(result)
         if result.answered == "invalid" and sum(item.answered == "invalid" for item in grades) <= SHOWN:
-            printer(f"    {example.id}: {result.error[:200]} | said: {raw[:160]!r}")
+            generated = f" | {result.tokens} new tokens: {result.raw_tokens[:120]!r}" if result.tokens is not None else ""
+            printer(f"    {example.id}: {result.error[:200]} | said: {raw[:160]!r}{generated}")
         if number % 25 == 0 or number == len(chosen):
             right = sum(item.correct for item in grades)
             printer(f"  {number} of {len(chosen)}: {right} right")

@@ -32,8 +32,17 @@ finishes. Each step is saved with the screenshot from just before it, in
 
 Before a session is saved you are shown everything you typed, and you can leave any
 of it out. Nothing is recorded in password managers, banking, payment and terminal
-windows (the same blocked list NEXUS Live uses). Do not type passwords while
-teaching anyway.
+windows (the same blocked list NEXUS Live uses), in teach mode's own console, or in
+a window whose title cannot be read. Wherever such a window shows on the screen,
+it is blacked out in the screenshots (on Windows and Linux; a Mac cannot say where
+its windows are, so close private windows there before teaching). Do not type
+passwords while teaching anyway.
+
+Keys NEXUS Live never presses (the Windows key, Caps Lock, Print Screen, the volume
+keys) are not saved as steps, and characters made with AltGr count as typing. A step
+taken so soon after the one before that no screenshot shows its effect, or a click
+with Ctrl or Shift held, is not an example of its own, but the examples after it
+still list it among the steps already taken.
 
 A few dozen sessions of the things you actually do makes a real difference.
 
@@ -66,8 +75,11 @@ It takes a few hours. The model lands in your Hugging Face repo, and a copy sits
 the notebook's Output tab in case the upload fails.
 
 The free T4 has no bfloat16 in hardware, so training runs in float16. If that
-overflows (the loss turns into NaN), it starts again in float32 by itself: slower,
-but it holds.
+overflows (the training or held-out loss turns into NaN), it starts again in
+float32 by itself: slower, but it holds.
+
+While it runs, `run.log` in your model repo shows how far it is, and is updated
+every ten minutes; a failure is written there with its reason.
 
 ### b. Colab (free)
 
@@ -103,6 +115,9 @@ hf auth login
 hf jobs uv run tools/nexus_vision_job.py -- --push YOUR_NAME/nexus-vision
 ```
 
+The script installs NEXUS from the `main` branch. Until NEXUS Live is merged, change
+`@main` in its first lines to `@claude/nexus-live`.
+
 ### Your recordings in the cloud
 
 Kaggle, Colab and Jobs train on your teach recordings only if you upload them,
@@ -114,7 +129,8 @@ nexus vision share-teach YOUR_NAME/nexus-teach
 
 Then set `TEACH = "YOUR_NAME/nexus-teach"` in the notebook (or pass
 `--teach YOUR_NAME/nexus-teach`). Look through `~/.nexus/live/teach/images` first if
-anything private was on your screen.
+anything private was on your screen. A repo of that name that already exists and is
+public is refused, and so is a public model repo for `--push`.
 
 ### One step at a time
 
@@ -135,8 +151,9 @@ nexus live --voice
 ```
 
 `pull` puts it in `~/.nexus/live/nexus_vision` (or `NEXUS_LIVE_MODEL_DIR`), where
-NEXUS Live's default backend loads it. On a graphics card under 8 GB it is loaded in
-4 bits. After the one download it works with no internet.
+NEXUS Live's default backend loads it, replacing whatever model was there. For an
+adapter it also downloads the base model it runs on (about 4.3 GB, once). After that
+it works with no internet. On a graphics card under 8 GB it is loaded in 4 bits.
 
 ## How good is it?
 
@@ -152,6 +169,11 @@ model on held-out examples:
 The held-out examples are kept out of training by screenshot and by teach session,
 so a screenshot the model learned from is never used to grade it.
 
+`eval_details.json` has every graded answer: what the model said, how many tokens it
+generated and what they were (special tokens included), and the error if the
+question failed. The first three invalid answers of each model are also in
+`run.log`.
+
 ## Files
 
 What `nexus vision train` writes, and NEXUS Live loads:
@@ -163,6 +185,8 @@ What `nexus vision train` writes, and NEXUS Live loads:
 | `nexus_live.json` | the model card: the prompt version it learned, the position format, the screenshot width |
 | `training.json` | what it was trained on and how |
 | `eval.json`, `README.md` | the comparison with the base model (`nexus vision build`) |
+| `eval_details.json` | every graded answer, for finding out why one was wrong |
+| `run.log` | the run's progress, and the reason if it failed (`nexus vision build --push`) |
 
 If NEXUS Live's prompts change, `PROMPT_VERSION` in `nexus/live/model.py` goes up and
 NEXUS Live refuses a model trained on the old ones, with a message saying to train

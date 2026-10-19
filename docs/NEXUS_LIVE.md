@@ -25,51 +25,75 @@ screen, and says what is missing and how to fix it.
 
 | Command | What it does |
 |---|---|
-| `nexus live` | type requests in the console |
+| `nexus live` | type a request in the console, then click the window it is for |
 | `nexus live --voice` | press Ctrl+Alt+Space, speak, and hear the answer |
 | `nexus live --watch` | also keep an eye on the screen and speak up when something needs you (an error, a finished download); it never acts on its own |
-| `nexus live --goal "open notepad"` | do one request and exit |
+| `nexus live --goal "open notepad"` | do one request and exit (click the window it is for, too) |
 | `nexus live --dry-run` | say what it would do, and touch nothing |
 | `nexus live --teach` | do tasks yourself and save them as training examples |
 
-Keys, which work whichever window is in front:
+Keys, which work whichever window is in front (on Windows the window never gets
+them, so they do not type a character there on keyboards with AltGr):
 
 | Keys | |
 |---|---|
 | Ctrl+Alt+Space | talk (press again when you are done, or just stop talking) |
 | Ctrl+Alt+Y / Ctrl+Alt+N | yes / no when it asks before a step |
-| Ctrl+Alt+Q | stop what it is doing |
+| Ctrl+Alt+Q | stop what it is doing; pressed while you are still talking, it drops what you said |
 | mouse into a screen corner | emergency stop in the middle of a step |
+
+NEXUS Live never types or clicks in its own console. When you type a request there,
+the console is in front, so it asks you to click the window the request is for and
+starts when that window comes forward.
 
 ## How it works
 
 For each request it loops: take a screenshot, ask the vision model for the next
 step, check the step, ask you, do it, look again. It stops when the model says the
 request is done or answered, when you say no, when you press stop, or after 8 steps
-(`NEXUS_LIVE_MAX_STEPS`), and it asks you to carry on rather than wandering.
+(`NEXUS_LIVE_MAX_STEPS`), and it asks you to carry on rather than wandering. If
+something fails (the model runs out of memory, say), that request ends and NEXUS
+Live waits for the next one.
 
 ## What keeps it safe
 
 - **It asks before every step** by default: the pointer moves to where it would
-  click, it says what it is about to do, and nothing happens until you press
-  Ctrl+Alt+Y. No answer within 30 seconds counts as no. With
-  `NEXUS_LIVE_CONFIRM=risky` clicks and scrolling go ahead and only typing and keys
-  are asked about.
+  click, and nothing happens until you press Ctrl+Alt+Y. No answer within 30
+  seconds counts as no. With `NEXUS_LIVE_CONFIRM=risky` clicks and scrolling go
+  ahead and only typing and keys are asked about.
+- **The question is built from what NEXUS Live checked, not from what the model
+  says.** It names the action, the window it lands in, and for typing every
+  character it would type and how many. The model's own words about the step are
+  not read out while you decide: text on the screen can steer a model, and it could
+  then describe a harmful step as a safe one.
+- **Typing is one line at a time.** Enter and Tab are steps of their own, each
+  asked about, so a yes to some text is never also a yes to pressing Enter. Text in
+  other languages is typed as characters on Windows; on a Mac or Linux it goes
+  through the clipboard, which keeps that text afterwards.
+- **It waits for your hands.** After your yes it waits until Ctrl and Alt are
+  released, so the step is not mixed with the keys of the yes. If you press a
+  modifier key while it types, it stops typing.
 - **Windows it never acts in**: password managers, Windows Security, banking,
-  PayPal, UPI and wallets, PowerShell, Command Prompt and terminals, the Registry
-  Editor, Group Policy, Task Scheduler and UAC prompts. Matched as whole words in
-  the title of the window in front; add your own with `NEXUS_LIVE_BLOCKED_WINDOWS`.
-  `NEXUS_LIVE_ALLOWED_WINDOWS` turns this around: it then acts only in the windows
-  you list.
-- **Keys it never presses**: the Windows key (it opens the Run box), Ctrl+Alt+Delete
-  and Ctrl+Shift+Esc.
-- **It checks the window again right before acting.** If a pop-up or another window
-  came forward after the screenshot, it looks again instead of clicking into it.
+  PayPal, UPI and wallets, PowerShell, Command Prompt, Windows Terminal, Git Bash,
+  MSYS2, Cygwin and Anaconda Prompt, the Registry Editor, Group Policy, Task
+  Scheduler, Task Manager and UAC prompts, matched as whole words in window titles;
+  and the Run box, the Start menu, search and Task View, matched as whole titles.
+  It checks both the window in front and, for a click or scroll, the window under
+  the pointer, since a click lands in whatever window is there; when it cannot tell
+  which window that is, it asks even with `risky`. Add your own words with
+  `NEXUS_LIVE_BLOCKED_WINDOWS`. `NEXUS_LIVE_ALLOWED_WINDOWS` turns this around: it
+  then acts only in the windows you list.
+- **Keys it never presses**: the Windows key and Ctrl+Esc (they open the Start menu
+  and the Run box), Ctrl+Alt+Delete, Ctrl+Shift+Esc, and its own hotkeys.
+- **It checks again right before acting.** If another window came forward, a
+  different window is now under the click, or the screen near the click has changed
+  (a dialog closed, a list scrolled) since the screenshot the model saw, it looks
+  again instead of acting on what is no longer there.
 - **It never clicks off the screenshot.** A position outside it is treated as a
   misread, not clamped to the nearest edge.
 - **The model is told** never to type passwords, one-time codes, card or bank
   details, or to confirm payments, and to hand those parts back to you.
-- **Watch mode only speaks.** It has no hands.
+- **Watch mode only speaks.** It has no hands, and it pauses while a request runs.
 
 ## Settings
 
@@ -112,4 +136,6 @@ computer's memory (`nexus live --check` says which).
 - One screen: it sees and acts on the main monitor.
 - Drags and drawing are not among its steps; teach mode records the press as a click.
 - A 2B model on a laptop takes a few seconds per step, more on a CPU.
+- On a Mac it cannot tell which window is under a click, so with `risky` it asks
+  about clicks too.
 - On Linux, pyautogui needs tkinter (`sudo apt install python3-tk`).

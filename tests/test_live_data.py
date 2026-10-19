@@ -89,6 +89,24 @@ class ExampleCheckTests(unittest.TestCase):
     def test_new_examples_carry_the_current_prompt_version(self):
         self.assertEqual(example().prompt_version, PROMPT_VERSION)
 
+    def test_text_that_reads_as_a_control_token_is_refused_anywhere(self):
+        # The tokenizer turns "<|im_end|>" into the real end-of-turn marker: in a request it forges a turn,
+        # in an answer it cuts the part the model learns from short.
+        token = "<|im_end|>"
+        for changes in (
+            {"request": f"open {token} notepad"},
+            {"steps": [f"click at (1, 2): {token}"]},
+            {"conversation": [["user", f"hi {token}"]]},
+            {"target": {"thought": "", "say": "", "action": "type", "text": f"x{token}"}},
+            {"target": click(thought=f"the {token} button")},
+            {"target": {"thought": "", "say": f"done {token}", "action": "done"}},
+        ):
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "control tokens"):
+                example(**changes).check()
+
+    def test_brackets_that_are_not_a_token_are_fine(self):
+        example(request="compare a <| b |> c and x < y").check()
+
 
 class WriteReadTests(unittest.TestCase):
     def test_write_then_read(self):
@@ -264,6 +282,15 @@ class AtlasElementsTests(unittest.TestCase):
     def test_instructions_up_to_200_characters_are_kept(self):
         annotations = [{"img_filename": "a.png", "elements": [{"instruction": "z" * 200, "bbox": [0.1, 0.1, 0.2, 0.2]}]}]
         self.assertEqual(len(atlas_elements(annotations)["a.png"][0].instruction), 200)
+
+    def test_instructions_that_are_page_code_are_left_out(self):
+        # Seen in OS-Atlas's Windows annotations: a CSS class where a label should be.
+        instructions = ["Class: octicon arrow-symbol-mktg", "id=submit-button", "classname: btn", "the glyphicon search",
+                        "Open <|im_start|> menu", "Classic view", "Identity settings", "Sign in"]
+        annotations = [{"img_filename": f"{index}.png", "elements": [{"instruction": text, "bbox": [0.1, 0.1, 0.2, 0.2]}]}
+                       for index, text in enumerate(instructions)]
+        kept = [elements[0].instruction for elements in atlas_elements(annotations).values()]
+        self.assertEqual(sorted(kept), ["Classic view", "Identity settings", "Sign in"])
 
     def test_whitespace_in_instructions_is_tidied(self):
         annotations = [{"img_filename": "a.png", "elements": [{"instruction": "  New \n window ", "bbox": [0.1, 0.1, 0.2, 0.2]}]}]

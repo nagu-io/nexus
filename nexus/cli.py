@@ -405,6 +405,7 @@ def live(voice, watch, goal, dry_run, backend, model, confirm, teach, teach_dir,
             )
         )
         session.start_hotkeys()
+        session.note_console()  # this console is in front now: NEXUS never acts in it
         if watch:
             session.start_watching()
         try:
@@ -414,7 +415,7 @@ def live(voice, watch, goal, dry_run, backend, model, confirm, teach, teach_dir,
             elif voice:
                 session.listen_loop()
             else:
-                console.print("[dim]Type a request (or exit).[/dim]")
+                console.print("[dim]Type a request (or exit), then click the window it is for.[/dim]")
                 session.type_loop()
         finally:
             session.close()
@@ -485,6 +486,9 @@ def vision_merge(adapter, out):
 def vision_pull(repo, target):
     """Download your NEXUS Vision from your Hugging Face account, for the local backend."""
     try:
+        import json
+        import shutil
+
         from huggingface_hub import snapshot_download
 
         from nexus.live.local import card_problem
@@ -493,7 +497,26 @@ def vision_pull(repo, target):
         settings = LiveSettings.from_env()
         folder = Path(target or settings.model_dir).expanduser()
         console.print(f"Downloading {repo} into {folder}...")
-        snapshot_download(repo, local_dir=str(folder), ignore_patterns=["checkpoints/*"])
+        # Into a folder of its own, which then replaces the old one whole: downloading over an old model
+        # left its files behind (an adapter's next to a merged model's), and the old adapter kept loading.
+        staging = folder.with_name(folder.name + ".download")
+        shutil.rmtree(staging, ignore_errors=True)
+        snapshot_download(repo, local_dir=str(staging), ignore_patterns=["checkpoints/*"])
+        if folder.exists():
+            previous = folder.with_name(folder.name + ".old")
+            shutil.rmtree(previous, ignore_errors=True)
+            folder.rename(previous)
+            staging.rename(folder)
+            shutil.rmtree(previous, ignore_errors=True)
+        else:
+            folder.parent.mkdir(parents=True, exist_ok=True)
+            staging.rename(folder)
+        adapter = folder / "adapter_config.json"
+        if adapter.exists():
+            base = json.loads(adapter.read_text(encoding="utf-8")).get("base_model_name_or_path", "")
+            if base:
+                console.print(f"It runs on top of {base}: downloading that too (about 4.3 GB, once), so NEXUS Live works offline.")
+                snapshot_download(base)
         problem = card_problem(folder, settings.coordinates)
         if problem:
             console.print(f"[yellow]Downloaded, but: {problem}[/yellow]")
@@ -513,6 +536,7 @@ def vision_share_teach(repo, source):
     try:
         from huggingface_hub import HfApi
 
+        from nexus.live.build import ensure_private
         from nexus.live.data import EXAMPLES_FILE
         from nexus.live.teach import default_folder
 
@@ -526,7 +550,7 @@ def vision_share_teach(repo, source):
         if not click.confirm("Upload?", default=False):
             return
         api = HfApi()
-        api.create_repo(repo, repo_type="dataset", private=True, exist_ok=True)
+        ensure_private(api, repo, "dataset")  # never into a repo that is already public
         api.upload_folder(folder_path=str(folder), repo_id=repo, repo_type="dataset", commit_message="NEXUS Live teach recordings")
         console.print(f"[green]Uploaded.[/green] Train with: --teach {repo}")
     except click.ClickException:

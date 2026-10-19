@@ -3,8 +3,8 @@
 import unittest
 from types import SimpleNamespace
 
-from nexus.live.agent import DECLINED, FINISHED, GAVE_UP, OUT_OF_STEPS, REFUSED, STOPPED, LiveAgent, Result
-from nexus.live.executor import Executor
+from nexus.live.agent import DECLINED, FINISHED, GAVE_UP, NO_WINDOW, OUT_OF_STEPS, REFUSED, STOPPED, LiveAgent, Result
+from nexus.live.executor import Executor, Interrupted
 from nexus.live.model import Decision, DecisionError, ModelUnavailable, VisionModel
 from nexus.live.screen import Shot
 from nexus.live.settings import LiveSettings
@@ -38,17 +38,43 @@ class FakeVision:
         return answer
 
 
-class FakeExecutor:
-    """The hands, recorded. ``titles`` is the window in front: one title, or a list read in turn (the last one repeats)."""
+def in_turn(values):
+    """A list read in turn, the last one repeating (one value on its own is a list of one)."""
+    return list(values) if isinstance(values, list) else [values]
 
-    def __init__(self, rig, titles):
+
+class FakeExecutor:
+    """The hands, recorded.
+
+    ``titles`` is the window in front and ``targets`` the window under a point:
+    each one title, or a list read in turn (the last one repeats). ``releases``
+    are the answers to "are the modifier keys up?", and ``failure`` is raised
+    by run().
+    """
+
+    def __init__(self, rig, titles, targets, releases=True, failure=None):
         self.rig = rig
-        self.titles = list(titles) if isinstance(titles, list) else [titles]
+        self.titles = in_turn(titles)
+        self.targets = in_turn(targets)
+        self.releases = in_turn(releases)
+        self.failure = failure
         self.runs = []
+
+    @staticmethod
+    def _next(values):
+        return values.pop(0) if len(values) > 1 else values[0]
 
     def foreground_title(self):
         self.rig.log.append("title")
-        return self.titles.pop(0) if len(self.titles) > 1 else self.titles[0]
+        return self._next(self.titles)
+
+    def window_at(self, point):
+        self.rig.log.append(("window_at", point))
+        return self._next(self.targets)
+
+    def pointer(self):
+        self.rig.log.append("pointer")
+        return (7, 8)
 
     def mouse_point(self, point, shot):
         self.rig.log.append(("mouse_point", point, shot))
@@ -57,9 +83,16 @@ class FakeExecutor:
     def point_at(self, point):
         self.rig.log.append(("point_at", point))
 
-    def run(self, decision, point):
+    def wait_for_release(self, timeout):
+        self.rig.log.append(("release", timeout))
+        return self._next(self.releases)
+
+    def run(self, decision, point, stop=None):
         self.rig.log.append(("run", decision, point))
         self.runs.append((decision, point))
+        if self.failure is not None:
+            failure = self.failure() if callable(self.failure) else self.failure
+            raise failure
         return f"did {decision.describe()}"
 
 
@@ -93,24 +126,38 @@ class FakeConfirmer:
 
 
 class Rig:
-    """A LiveAgent wired to fakes that write everything they are asked to do into one log."""
+    """A LiveAgent wired to fakes that write everything they are asked to do into one log.
 
-    def __init__(self, *answers, titles=NOTEPAD, confirms=(), **settings):
+    ``targets`` (the window under a click) defaults to the window in front;
+    ``shots`` are the screenshots handed out in turn (the last repeats), and
+    ``changed`` how much the screen differs when two are compared.
+    """
+
+    def __init__(self, *answers, titles=NOTEPAD, targets="same", confirms=(), releases=True, failure=None,
+                 shots=None, changed=0.0, **settings):
         self.log = []
         self.settings = LiveSettings(**settings)
         self.vision = FakeVision(self, answers)
-        self.executor = FakeExecutor(self, titles)
+        self.executor = FakeExecutor(self, titles, titles if targets == "same" else targets, releases, failure)
         self.speaker = FakeSpeaker(self)
         self.confirmer = FakeConfirmer(self, confirms)
         self.slept = []
         self.on_sleep = None
+        self.shots = in_turn(shots if shots is not None else SHOT)
+        self.changed = changed
+        self.compared = []
         self.agent = LiveAgent(
-            self.settings, self.vision, self.executor, self.speaker, self.confirmer, capture=self.capture, sleep=self.sleep
+            self.settings, self.vision, self.executor, self.speaker, self.confirmer, capture=self.capture, sleep=self.sleep,
+            difference=self.difference,
         )
 
     def capture(self):
         self.log.append("capture")
-        return SHOT
+        return self.shots.pop(0) if len(self.shots) > 1 else self.shots[0]
+
+    def difference(self, before, after, around):
+        self.compared.append((before, after, around))
+        return self.changed
 
     def sleep(self, seconds):
         self.log.append(("sleep", seconds))
@@ -150,8 +197,8 @@ class ScriptedModel(VisionModel):
 class ResultTests(unittest.TestCase):
     def test_outcome_names(self):
         self.assertEqual(
-            (FINISHED, REFUSED, DECLINED, STOPPED, GAVE_UP, OUT_OF_STEPS),
-            ("finished", "refused", "declined", "stopped", "gave_up", "out_of_steps"),
+            (FINISHED, REFUSED, DECLINED, STOPPED, GAVE_UP, OUT_OF_STEPS, NO_WINDOW),
+            ("finished", "refused", "declined", "stopped", "gave_up", "out_of_steps", "no_window"),
         )
 
     def test_defaults(self):
@@ -189,23 +236,29 @@ class FinishTests(unittest.TestCase):
         self.assertIs(call.shot, SHOT)
 
 
+QUESTION = "click at (500, 500) in 'Untitled - Notepad'"
+
+
 class ActingTests(unittest.TestCase):
     def test_a_click_is_shown_asked_about_rechecked_then_done(self):
-        click = Decision("click", x=500.0, y=500.0, say="Clicking Save.")
+        click = Decision("click", x=500.0, y=500.0, say="Clicking Save.", thought="the Save button")
         rig = Rig(click, DONE, confirms=(True,))
         result = rig.agent.handle("save the file")
-        self.assertEqual(result, Result(FINISHED, said="All done.", steps=["did click at (500, 500)"]))
+        self.assertEqual(result, Result(FINISHED, said="All done.", steps=["did click at (500, 500): the Save button"]))
         self.assertEqual(
             rig.log,
             [
                 "capture",
                 "title",
                 "decide",
-                ("say", "Clicking Save."),
                 ("mouse_point", (1000, 500), SHOT),
+                ("window_at", (1001, 501)),
                 ("point_at", (1001, 501)),
-                ("ask", "click at (500, 500)"),
+                ("ask", QUESTION),
+                ("release", 2.0),
                 "title",
+                ("window_at", (1001, 501)),
+                "capture",
                 ("run", click, (1001, 501)),
                 ("sleep", 0.8),
                 "capture",
@@ -214,7 +267,7 @@ class ActingTests(unittest.TestCase):
                 ("say", "All done."),
             ],
         )
-        self.assertEqual(rig.vision.calls[1].steps, ["did click at (500, 500)"])
+        self.assertEqual(rig.vision.calls[1].steps, ["did click at (500, 500): the Save button"])
         self.assertEqual(rig.agent.conversation, [("user", "save the file"), ("you", "All done.")])
 
     def test_settle_pause_is_the_setting(self):
@@ -229,16 +282,33 @@ class ActingTests(unittest.TestCase):
         self.assertEqual(rig.confirmer.asked, [])
         self.assertEqual(rig.events("point_at"), [])
         self.assertEqual(rig.executor.runs, [(CLICK, (1001, 501))])
-        # The window is still checked again right before the click.
-        self.assertEqual(rig.log[: rig.log.index(("run", CLICK, (1001, 501)))].count("title"), 2)
+        # The window in front and the one under the click are both checked again right before it.
+        before_click = rig.log[: rig.log.index(("run", CLICK, (1001, 501)))]
+        self.assertEqual(before_click.count("title"), 2)
+        self.assertEqual(len([event for event in before_click if event[0] == "window_at"]), 2)
+
+    def test_what_the_model_says_is_heard_when_nothing_is_asked(self):
+        click = Decision("click", x=500.0, y=500.0, say="Opening the menu.")
+        rig = Rig(click, DONE, confirm="risky")
+        rig.agent.handle("open the menu")
+        self.assertLess(rig.log.index(("say", "Opening the menu.")), rig.log.index(("run", click, (1001, 501))))
 
     def test_risky_mode_still_asks_before_typing(self):
         typing = Decision("type", text="hello")
         rig = Rig(typing, DONE, confirm="risky", confirms=(True,))
         rig.agent.handle("say hello")
-        self.assertEqual(rig.confirmer.asked, ["type 'hello'"])
+        self.assertEqual(rig.confirmer.asked, ["type 'hello' (5 characters) in 'Untitled - Notepad'"])
         self.assertEqual(rig.events("point_at"), [])
+        self.assertEqual(rig.events("window_at"), [])
         self.assertEqual(rig.executor.runs, [(typing, None)])
+
+    def test_the_whole_text_is_asked_about(self):
+        # Typing approved from its first 57 characters let 443 more, Enter presses included, through.
+        text = "Thanks for the update, I will reply properly tomorrow morning. " * 7
+        typing = Decision("type", text=text)
+        rig = Rig(typing, DONE, confirms=(True,))
+        rig.agent.handle("reply")
+        self.assertEqual(rig.confirmer.asked, [f"type {text!r} ({len(text)} characters) in 'Untitled - Notepad'"])
 
     def test_pixel_positions(self):
         click = Decision("click", x=900.0, y=450.0)
@@ -246,13 +316,22 @@ class ActingTests(unittest.TestCase):
         rig.agent.handle("click near the corner")
         self.assertEqual(rig.events("mouse_point"), [("mouse_point", (1800, 900), SHOT)])
         self.assertEqual(rig.executor.runs, [(click, (1801, 901))])
+        self.assertEqual(rig.compared, [])  # the same screenshot both times: nothing to compare
 
     def test_scroll_without_a_position_scrolls_where_the_pointer_is(self):
         scroll = Decision("scroll", amount=-3)
         rig = Rig(scroll, DONE, confirm="risky")
         rig.agent.handle("scroll down")
         self.assertEqual(rig.events("mouse_point"), [])
-        self.assertEqual(rig.executor.runs, [(scroll, None)])
+        self.assertEqual(rig.events("window_at")[0], ("window_at", (7, 8)))  # the window under the pointer is checked
+        self.assertEqual(rig.executor.runs, [(scroll, (7, 8))])
+
+    def test_scroll_without_a_position_is_asked_about_in_the_window_under_the_pointer(self):
+        scroll = Decision("scroll", amount=-3)
+        rig = Rig(scroll, DONE, confirms=(True,), targets="Inbox - Outlook")
+        rig.agent.handle("scroll down")
+        self.assertEqual(rig.confirmer.asked, ["scroll down 3 in 'Inbox - Outlook'"])
+        self.assertEqual(rig.events("point_at"), [])  # the pointer is there already
 
     def test_scroll_at_a_position(self):
         scroll = Decision("scroll", amount=3, x=500.0, y=250.0)
@@ -260,14 +339,15 @@ class ActingTests(unittest.TestCase):
         rig.agent.handle("scroll the list up")
         self.assertEqual(rig.events("mouse_point"), [("mouse_point", (1000, 250), SHOT)])
         self.assertEqual(rig.events("point_at"), [("point_at", (1001, 251))])
-        self.assertEqual(rig.confirmer.asked, ["scroll up 3"])
+        self.assertEqual(rig.confirmer.asked, ["scroll up 3 at (500, 250) in 'Untitled - Notepad'"])
         self.assertEqual(rig.executor.runs, [(scroll, (1001, 251))])
 
     def test_wait_sleeps_without_asking(self):
-        rig = Rig(Decision("wait", seconds=2.5), DONE, titles=BANK)
+        rig = Rig(Decision("wait", seconds=2.5, say="Waiting for the page."), DONE, titles=BANK)
         result = rig.agent.handle("wait for the page")
         self.assertEqual(result, Result(FINISHED, said="All done.", steps=["wait 2.5 s"]))
         self.assertEqual(rig.slept, [2.5])
+        self.assertEqual(rig.speaker.said, ["Waiting for the page.", "All done."])
         self.assertEqual((rig.confirmer.asked, rig.executor.runs), ([], []))
 
     def test_off_screen_position_is_not_clicked(self):
@@ -281,8 +361,42 @@ class ActingTests(unittest.TestCase):
     def test_unknown_window_is_asked_about_even_in_risky_mode(self):
         rig = Rig(CLICK, DONE, titles=None, confirm="risky", confirms=(True,))
         rig.agent.handle("click the middle")
-        self.assertEqual(rig.confirmer.asked, ["click at (500, 500)"])
+        self.assertEqual(rig.confirmer.asked, ["click at (500, 500) (I can't tell which window is in front)"])
         self.assertEqual(rig.executor.runs, [(CLICK, (1001, 501))])
+
+    def test_an_unknown_window_under_the_click_is_asked_about_in_risky_mode(self):
+        rig = Rig(CLICK, DONE, targets=None, confirm="risky", confirms=(True,))
+        rig.agent.handle("click the middle")
+        self.assertEqual(rig.confirmer.asked, ["click at (500, 500) (I can't tell which window is under that point)"])
+        self.assertEqual(rig.executor.runs, [(CLICK, (1001, 501))])
+
+
+class WhatIsAskedTests(unittest.TestCase):
+    """The question is built from what NEXUS checked itself, never from the model's words (screen text steers those)."""
+
+    def test_the_model_s_words_are_not_said_while_the_user_decides(self):
+        click = Decision("click", x=640.0, y=720.0, thought="the Cancel button, to close this safely",
+                         say="This only closes the pop-up, it is safe.")
+        rig = Rig(click, DONE, titles="Confirm transfer - Mozilla Firefox", confirms=(True,))
+        rig.agent.handle("close the pop-up")
+        self.assertEqual(rig.confirmer.asked, ["click at (640, 720) in 'Confirm transfer - Mozilla Firefox'"])
+        self.assertNotIn("This only closes the pop-up, it is safe.", rig.speaker.said)
+        self.assertEqual(rig.speaker.said, ["All done."])
+
+    def test_the_window_under_the_click_is_named(self):
+        rig = Rig(CLICK, DONE, targets="Calculator", confirms=(True,))
+        rig.agent.handle("click")
+        self.assertEqual(rig.confirmer.asked, ["click at (500, 500) in 'Calculator'"])
+
+    def test_keys_name_the_window_in_front(self):
+        rig = Rig(Decision("hotkey", keys=("ctrl", "s")), DONE, confirms=(True,))
+        rig.agent.handle("save")
+        self.assertEqual(rig.confirmer.asked, ["press ctrl+s in 'Untitled - Notepad'"])
+
+    def test_a_window_with_no_title_is_not_named(self):
+        rig = Rig(Decision("press", keys=("enter",)), DONE, titles="", confirms=(True,))
+        rig.agent.handle("press enter")
+        self.assertEqual(rig.confirmer.asked, ["press enter"])
 
 
 class RefusalTests(unittest.TestCase):
@@ -292,14 +406,29 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual(result, Result(REFUSED, said=BANK_REFUSAL, steps=[]))
         self.assertEqual(rig.speaker.said, [BANK_REFUSAL])
         self.assertEqual(rig.agent.conversation, [("user", "pay the bill"), ("you", BANK_REFUSAL)])
-        self.assertEqual((rig.confirmer.asked, rig.executor.runs), ([], []))
-        self.assertEqual((rig.events("mouse_point"), rig.events("point_at")), ([], []))
+        self.assertEqual((rig.confirmer.asked, rig.executor.runs, rig.events("point_at")), ([], [], []))
+
+    def test_a_blocked_window_under_the_click_is_refused_in_every_mode(self):
+        # KeePass beside the window in front: the click would land in KeePass.
+        for confirm in ("all", "risky"):
+            with self.subTest(confirm=confirm):
+                rig = Rig(CLICK, targets="Database.kdbx - KeePass", confirm=confirm)
+                result = rig.agent.handle("click it")
+                self.assertEqual(result.outcome, REFUSED)
+                self.assertEqual(result.said, "The window under that point looks like 'keepass', which I never act in. Please do this part yourself.")
+                self.assertEqual((rig.confirmer.asked, rig.executor.runs, rig.events("point_at")), ([], [], []))
 
     def test_windows_key_is_refused(self):
         rig = Rig(Decision("hotkey", keys=("win", "r")))
         result = rig.agent.handle("open the run box")
         self.assertEqual(result.outcome, REFUSED)
         self.assertEqual(result.said, "I don't use the Windows key: it opens the Run box and system menus.")
+        self.assertEqual(rig.executor.runs, [])
+
+    def test_its_own_hotkeys_are_refused(self):
+        rig = Rig(Decision("hotkey", keys=("ctrl", "alt", "y")))
+        result = rig.agent.handle("approve it")
+        self.assertEqual((result.outcome, result.said), (REFUSED, "That is one of my own hotkeys, so I don't press it."))
         self.assertEqual(rig.executor.runs, [])
 
     def test_unknown_window_is_refused_when_only_some_windows_are_allowed(self):
@@ -318,6 +447,7 @@ class DeclineTests(unittest.TestCase):
         result = rig.agent.handle("click the middle")
         self.assertEqual(result, Result(DECLINED, said="", steps=[]))
         self.assertEqual(rig.executor.runs, [])
+        self.assertEqual(rig.events("release"), [])
         self.assertEqual(len(rig.vision.calls), 1)
         self.assertEqual(rig.agent.conversation, [("user", "click the middle"), ("you", "The user said no.")])
 
@@ -333,6 +463,20 @@ class StopTests(unittest.TestCase):
         rig = Rig(DONE)
         rig.agent.stop()
         self.assertEqual(rig.agent.handle("hello").outcome, FINISHED)
+
+    def test_a_stop_while_the_request_was_spoken_cancels_it(self):
+        # Voice mode: the stop key pressed while talking drops what was said, it is never carried out.
+        rig = Rig(CLICK, DONE, confirms=(True,))
+        rig.agent.new_request()
+        rig.agent.stop()
+        self.assertEqual(rig.agent.handle("delete the files in my Downloads", fresh=False), Result(STOPPED))
+        self.assertEqual((rig.vision.calls, rig.executor.runs), ([], []))
+
+    def test_new_request_forgets_an_earlier_stop(self):
+        rig = Rig(DONE)
+        rig.agent.stop()
+        rig.agent.new_request()
+        self.assertEqual(rig.agent.handle("hello", fresh=False).outcome, FINISHED)
 
     def test_stop_while_the_model_thinks(self):
         rig = Rig()
@@ -361,7 +505,55 @@ class StopTests(unittest.TestCase):
         rig.on_sleep = rig.agent.stop
         result = rig.agent.handle("click")
         self.assertEqual(result, Result(STOPPED, steps=["did click at (500, 500)"]))
-        self.assertEqual(rig.captures, 1)
+        self.assertEqual(rig.captures, 2)  # the look, and the check that the screen had not moved on
+        self.assertEqual(len(rig.vision.calls), 1)
+
+    def test_stop_while_typing(self):
+        typing = Decision("type", text="hello world")
+        rig = Rig(typing, DONE, confirms=(True,))
+
+        def stopped_part_way():
+            rig.agent.stop_event.set()
+            return Interrupted("stopped")
+
+        rig.executor.failure = stopped_part_way
+        result = rig.agent.handle("type it")
+        self.assertEqual(result, Result(STOPPED, steps=["(stopped part-way: type 'hello world')"]))
+        self.assertEqual(len(rig.vision.calls), 1)
+
+
+class HeldKeyTests(unittest.TestCase):
+    """The yes hotkey is still held when it fires: a step taken then would be Ctrl+Alt+letters."""
+
+    def test_the_step_waits_for_the_keys_to_come_up(self):
+        rig = Rig(CLICK, DONE, confirms=(True,))
+        rig.agent.handle("click")
+        self.assertLess(rig.log.index(("release", 2.0)), rig.log.index(("run", CLICK, (1001, 501))))
+
+    def test_slow_hands_are_asked_to_let_go(self):
+        rig = Rig(CLICK, DONE, confirms=(True,), releases=[False, True])
+        rig.agent.handle("click")
+        self.assertEqual(rig.events("release"), [("release", 2.0), ("release", 10.0)])
+        self.assertIn("Let go of the keys and I'll go on.", rig.speaker.said)
+        self.assertEqual(rig.executor.runs, [(CLICK, (1001, 501))])
+
+    def test_keys_that_stay_down_mean_the_step_is_not_taken(self):
+        rig = Rig(CLICK, DONE, confirms=(True,), releases=False)
+        result = rig.agent.handle("click")
+        message = "Keys stayed held down, so I didn't do it: with them, it would not be the step you agreed to."
+        self.assertEqual(result, Result(STOPPED, said=message, steps=[]))
+        self.assertEqual(rig.executor.runs, [])
+
+    def test_steps_without_a_question_wait_for_the_keys_too(self):
+        rig = Rig(CLICK, DONE, confirm="risky", releases=False)
+        self.assertEqual(rig.agent.handle("click").outcome, STOPPED)
+        self.assertEqual(rig.executor.runs, [])
+
+    def test_a_key_pressed_while_typing_stops_the_typing(self):
+        rig = Rig(Decision("type", text="hello"), DONE, confirms=(True,), failure=Interrupted("ctrl held down"))
+        result = rig.agent.handle("type hello")
+        self.assertEqual(result.outcome, STOPPED)
+        self.assertEqual(result.said, "I stopped typing part-way: ctrl held down. Some of it may be typed already.")
         self.assertEqual(len(rig.vision.calls), 1)
 
 
@@ -369,7 +561,7 @@ class WindowChangeTests(unittest.TestCase):
     NOTE = "(not done: the window in front changed before 'click at (500, 500)')"
 
     def test_window_change_while_asking_skips_the_step(self):
-        rig = Rig(CLICK, DONE, titles=[NOTEPAD, BANK, BANK], confirms=(True,))
+        rig = Rig(CLICK, DONE, titles=[NOTEPAD, BANK, BANK], targets=NOTEPAD, confirms=(True,))
         result = rig.agent.handle("click the middle")
         self.assertEqual(result, Result(FINISHED, said="All done.", steps=[self.NOTE]))
         self.assertEqual(rig.executor.runs, [])
@@ -377,7 +569,7 @@ class WindowChangeTests(unittest.TestCase):
         self.assertEqual(rig.vision.calls[1].steps, [self.NOTE])
 
     def test_window_change_without_asking_skips_the_step(self):
-        rig = Rig(CLICK, DONE, titles=[NOTEPAD, "Calculator", "Calculator"], confirm="risky")
+        rig = Rig(CLICK, DONE, titles=[NOTEPAD, "Calculator", "Calculator"], targets=NOTEPAD, confirm="risky")
         result = rig.agent.handle("click the middle")
         self.assertEqual(result.steps, [self.NOTE])
         self.assertEqual((rig.confirmer.asked, rig.executor.runs), ([], []))
@@ -386,6 +578,136 @@ class WindowChangeTests(unittest.TestCase):
         rig = Rig(CLICK, DONE, titles=None, confirms=(True,))
         rig.agent.handle("click the middle")
         self.assertEqual(rig.executor.runs, [(CLICK, (1001, 501))])
+
+    def test_a_new_window_under_the_click_skips_it(self):
+        # A pop-up opened over the spot while the user decided.
+        rig = Rig(CLICK, DONE, targets=[NOTEPAD, "Update available"], confirms=(True,))
+        result = rig.agent.handle("click the middle")
+        self.assertEqual(result.steps, ["(not done: the window under that point changed before 'click at (500, 500)')"])
+        self.assertEqual(rig.executor.runs, [])
+
+
+class ScreenChangeTests(unittest.TestCase):
+    """The model chose its step on a screenshot that is seconds old by the time it is carried out."""
+
+    LATER = Shot(image=b"later", width=1000, height=500, screen_width=2000, screen_height=1000)
+    NOTE = "(not done: the screen changed before 'click at (500, 500)')"
+
+    def test_a_changed_screen_under_the_click_skips_it(self):
+        rig = Rig(CLICK, DONE, confirms=(True,), shots=[SHOT, self.LATER, self.LATER], changed=0.31)
+        result = rig.agent.handle("click OK")
+        self.assertEqual(result.steps, [self.NOTE])
+        self.assertEqual(rig.executor.runs, [])
+        self.assertEqual(rig.compared, [(b"screenshot", b"later", (0.5, 0.5))])
+
+    def test_a_small_change_under_the_click_is_fine(self):
+        rig = Rig(CLICK, DONE, confirms=(True,), shots=[SHOT, self.LATER, self.LATER], changed=0.3)
+        rig.agent.handle("click OK")
+        self.assertEqual(rig.executor.runs, [(CLICK, (1001, 501))])
+
+    def test_keys_compare_the_whole_screen(self):
+        typing = Decision("type", text="hi")
+        rig = Rig(typing, DONE, confirms=(True,), shots=[SHOT, self.LATER, self.LATER], changed=0.26)
+        result = rig.agent.handle("type hi")
+        self.assertEqual(result.steps, ["(not done: the screen changed before 'type 'hi'')"])
+        self.assertEqual(rig.compared, [(b"screenshot", b"later", None)])
+        rig = Rig(typing, DONE, confirms=(True,), shots=[SHOT, self.LATER, self.LATER], changed=0.25)
+        rig.agent.handle("type hi")
+        self.assertEqual(rig.executor.runs, [(typing, None)])
+
+    def test_pixel_positions_are_compared_where_they_are(self):
+        click = Decision("click", x=250.0, y=125.0)
+        rig = Rig(click, DONE, coordinates="pixels", confirms=(True,), shots=[SHOT, self.LATER, self.LATER])
+        rig.agent.handle("click")
+        self.assertEqual(rig.compared[0][2], (0.25, 0.25))
+
+    def test_screenshots_that_cannot_be_compared_do_not_block_the_step(self):
+        rig = Rig(CLICK, DONE, confirms=(True,), shots=[SHOT, self.LATER, self.LATER])
+        rig.agent.difference = lambda before, after, around: 1 / 0
+        rig.agent.handle("click")
+        self.assertEqual(rig.executor.runs, [(CLICK, (1001, 501))])
+
+
+class OwnWindowTests(unittest.TestCase):
+    """A request typed into NEXUS Live's console starts with that console in front."""
+
+    CONSOLE = "MINGW64:/c/Users/nagu/nexus"
+
+    def rig(self, *answers, titles, **settings):
+        rig = Rig(*answers, titles=titles, **settings)
+        rig.agent.note_own_window(self.CONSOLE)
+        return rig
+
+    def test_it_waits_for_the_user_to_pick_a_window(self):
+        rig = self.rig(Decision("type", text="hi"), DONE, titles=[self.CONSOLE, self.CONSOLE, self.CONSOLE, NOTEPAD], confirms=(True,))
+        result = rig.agent.handle("say hi")
+        self.assertEqual(result.outcome, FINISHED)
+        self.assertEqual(rig.speaker.said[0], "Click the window you want me to work in, and I'll start there.")
+        self.assertEqual(rig.slept[:4], [0.25, 0.25, 0.25, 0.8])  # three looks at the window in front, then a moment to settle
+        self.assertEqual(rig.confirmer.asked, ["type 'hi' (2 characters) in 'Untitled - Notepad'"])
+        self.assertEqual(len(rig.vision.calls), 2)  # the model never saw the console screenshot
+
+    def test_waiting_does_not_use_up_steps(self):
+        rig = self.rig(DONE, titles=[self.CONSOLE, NOTEPAD], max_steps=1)
+        self.assertEqual(rig.agent.handle("finish").outcome, FINISHED)
+
+    def test_no_window_picked_in_time(self):
+        rig = self.rig(DONE, titles=self.CONSOLE, confirm_timeout=3.0)
+        result = rig.agent.handle("do something")
+        message = "No other window came to the front, so I stopped. Click the window to use, then ask again."
+        self.assertEqual(result, Result(NO_WINDOW, said=message, steps=[]))
+        self.assertEqual(rig.slept, [0.25] * 12)
+        self.assertEqual(rig.vision.calls, [])
+
+    def test_stop_while_waiting(self):
+        rig = self.rig(DONE, titles=self.CONSOLE)
+        rig.on_sleep = rig.agent.stop
+        self.assertEqual(rig.agent.handle("do something").outcome, STOPPED)
+
+    def test_back_in_its_own_window_too_often(self):
+        # The console was in front at every look, however often another window came forward between them.
+        rig = self.rig(DONE, titles=[self.CONSOLE, NOTEPAD, self.CONSOLE, NOTEPAD, self.CONSOLE, NOTEPAD, self.CONSOLE])
+        result = rig.agent.handle("do something")
+        self.assertEqual(result.outcome, NO_WINDOW)
+        self.assertEqual(rig.vision.calls, [])
+        self.assertEqual(rig.speaker.said.count("Click the window you want me to work in, and I'll start there."), 3)
+
+    def test_a_click_into_its_own_window_is_refused(self):
+        rig = self.rig(CLICK, titles=NOTEPAD, targets=self.CONSOLE, confirm="risky")
+        result = rig.agent.handle("click")
+        self.assertEqual((result.outcome, result.said), (REFUSED, "That point is in my own window, which I never click or type in."))
+        self.assertEqual(rig.executor.runs, [])
+
+    def test_only_real_titles_are_noted(self):
+        rig = Rig()
+        rig.agent.note_own_window(None)
+        rig.agent.note_own_window("")
+        self.assertEqual(rig.agent.own_windows, set())
+        rig.agent.note_own_window("Windows PowerShell")
+        rig.agent.note_own_window("Windows PowerShell")
+        self.assertEqual(rig.agent.own_windows, {"Windows PowerShell"})
+
+
+class FailureTests(unittest.TestCase):
+    """A failure ends the request, never NEXUS Live: the console or voice loop goes on to the next one."""
+
+    def test_the_model_failing_gives_up_the_request(self):
+        rig = Rig(RuntimeError("CUDA out of memory"))
+        result = rig.agent.handle("tidy up")
+        message = "Something went wrong (RuntimeError: CUDA out of memory), so I stopped."
+        self.assertEqual(result, Result(GAVE_UP, said=message, steps=[]))
+        self.assertEqual(rig.speaker.said, [message])
+
+    def test_the_hands_failing_gives_up_the_request_keeping_the_steps(self):
+        rig = Rig(Decision("wait", seconds=1.0), CLICK, confirm="risky", failure=OSError("no display"))
+        result = rig.agent.handle("click")
+        self.assertEqual(result, Result(GAVE_UP, said="Something went wrong (OSError: no display), so I stopped.", steps=["wait 1 s"]))
+
+    def test_the_pointer_in_a_corner_is_a_stop(self):
+        FailSafeException = type("FailSafeException", (Exception,), {})
+        rig = Rig(CLICK, confirm="risky", failure=FailSafeException("PyAutoGUI fail-safe triggered"))
+        result = rig.agent.handle("click")
+        self.assertEqual(result, Result(STOPPED, said="Stopped: the pointer went into a corner of the screen.", steps=[]))
 
 
 class ModelTroubleTests(unittest.TestCase):
@@ -437,6 +759,16 @@ class ModelTroubleTests(unittest.TestCase):
         rig = Rig()
         rig.agent.vision = ScriptedModel(huge, huge)
         self.assertEqual(rig.agent.handle("click").outcome, GAVE_UP)
+
+    def test_typing_with_a_line_break_is_an_unreadable_answer(self):
+        # Enter in the middle of typing is a step of its own; such an answer is tried again, never typed.
+        answer = '{"thought": "", "say": "", "action": "type", "text": "ok\\npowershell -c evil\\n"}'
+        rig = Rig()
+        model = ScriptedModel(answer, '{"thought": "", "say": "", "action": "done"}')
+        rig.agent.vision = model
+        self.assertEqual(rig.agent.handle("reply").outcome, FINISHED)
+        self.assertIn("line break", model.texts[1])
+        self.assertEqual(rig.executor.runs, [])
 
 
 class StepLimitTests(unittest.TestCase):
@@ -516,11 +848,12 @@ class DryRunTests(unittest.TestCase):
     def test_dry_run_moves_and_clicks_nothing(self):
         backend = RecordingBackend()
         rig = Rig(CLICK, DONE, confirms=(True,), dry_run=True)
-        executor = Executor(dry_run=True, backend=backend, title_reader=lambda: NOTEPAD)
+        executor = Executor(dry_run=True, backend=backend, title_reader=lambda: NOTEPAD, window_reader=lambda point: NOTEPAD,
+                            key_reader=frozenset)
         agent = LiveAgent(rig.settings, rig.vision, executor, rig.speaker, rig.confirmer, capture=rig.capture, sleep=rig.sleep)
         result = agent.handle("click the middle")
         self.assertEqual(result, Result(FINISHED, said="All done.", steps=["(dry run, nothing done) click at (500, 500)"]))
-        self.assertEqual(rig.confirmer.asked, ["click at (500, 500)"])
+        self.assertEqual(rig.confirmer.asked, [QUESTION])
         self.assertEqual(backend.calls, ["size"])  # it only read the screen size to work out where it would click
 
 

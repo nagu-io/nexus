@@ -55,10 +55,34 @@ DEFAULT_BLOCKED_WINDOWS = (
     "cmd.exe",
     "windows terminal",
     "terminal",
+    "git bash",
+    "mingw64",
+    "mingw32",
+    "msys2",
+    "cygwin",
+    "anaconda prompt",
+    "miniforge prompt",
     "registry editor",
     "group policy",
     "task scheduler",
+    "task manager",
     "user account control",
+)
+
+# Windows NEXUS Live never acts in, matched against the whole title: the Run box,
+# the Start menu and Windows search run whatever is typed into them, and their
+# titles are ordinary words that would block far too much as whole-word matches.
+DEFAULT_BLOCKED_TITLES = (
+    "run",
+    "start",
+    "search",
+    "cortana",
+    "task view",
+    "task switching",
+    "action center",
+    "notification center",
+    "quick settings",
+    "services",
 )
 
 
@@ -99,13 +123,32 @@ def _choice(name: str, default: str, choices: tuple[str, ...]) -> str:
     return value
 
 
+def _plain(title: str | None) -> str:
+    # Consoles show the command line as typed ("Command Prompt - nexus  live"): runs of spaces count as one.
+    return " ".join((title or "").split()).lower()
+
+
 def window_matches(title: str, words: tuple[str, ...]) -> str | None:
     """The first of ``words`` found as a whole word (or phrase) in ``title``, or None."""
-    lowered = (title or "").lower()
+    lowered = _plain(title)
     for word in words:
         if word and re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", lowered):
             return word
     return None
+
+
+def title_is(title: str | None, titles: tuple[str, ...]) -> str | None:
+    """The one of ``titles`` that is the whole of ``title`` (whatever case and spacing), or None."""
+    lowered = _plain(title)
+    for candidate in titles:
+        if candidate and lowered == _plain(candidate):
+            return candidate
+    return None
+
+
+def blocked_by(title: str | None, settings: "LiveSettings") -> str | None:
+    """The blocked word or whole title that ``title`` matches, or None: a window NEXUS Live never acts or records in."""
+    return window_matches(title or "", settings.blocked_windows) or title_is(title, settings.blocked_titles)
 
 
 @dataclass(frozen=True)
@@ -122,6 +165,7 @@ class LiveSettings:
     screen_max_width: int = 1280  # NEXUS_LIVE_SCREEN_WIDTH: screenshots are shrunk to this before the model sees them
     allowed_windows: tuple[str, ...] = ()  # NEXUS_LIVE_ALLOWED_WINDOWS: if set, the only windows it may act in
     blocked_windows: tuple[str, ...] = DEFAULT_BLOCKED_WINDOWS  # plus NEXUS_LIVE_BLOCKED_WINDOWS
+    blocked_titles: tuple[str, ...] = DEFAULT_BLOCKED_TITLES  # whole titles: the Run box, Start, search
     hotkey_talk: str = "<ctrl>+<alt>+<space>"  # NEXUS_LIVE_HOTKEY_TALK
     hotkey_stop: str = "<ctrl>+<alt>+q"  # NEXUS_LIVE_HOTKEY_STOP
     hotkey_yes: str = "<ctrl>+<alt>+y"  # NEXUS_LIVE_HOTKEY_YES

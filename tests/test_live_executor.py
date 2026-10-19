@@ -1,14 +1,16 @@
 """Tests for nexus.live.executor: the hands, driven through a fake pyautogui."""
 
+import ctypes
 import importlib.util
 import platform
 import sys
+import threading
 import unittest
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 from unittest.mock import patch
 
 import nexus.live.executor as executor_module
-from nexus.live.executor import WHEEL_NOTCH, Executor
+from nexus.live.executor import WHEEL_NOTCH, Executor, Interrupted
 from nexus.live.model import Decision
 from nexus.live.screen import Shot
 
@@ -79,24 +81,64 @@ class FakeClipboard:
 class MousePointTests(unittest.TestCase):
     def test_same_size_is_unchanged(self):
         backend = FakeBackend((1920, 1080))
-        self.assertEqual(Executor(backend=backend).mouse_point((960, 540), SHOT), (960, 540))
+        self.assertEqual(Executor(backend=backend, system="Windows").mouse_point((960, 540), SHOT), (960, 540))
         self.assertEqual(backend.calls, [("size",)])
 
-    def test_scaled_display(self):
-        executor = Executor(backend=FakeBackend((1536, 864)))  # Windows at 125% without DPI awareness
+    def test_scaled_display_on_windows(self):
+        executor = Executor(backend=FakeBackend((1536, 864)), system="Windows")  # 125% without DPI awareness
         self.assertEqual(executor.mouse_point((960, 540), SHOT), (768, 432))
-        self.assertEqual(executor.mouse_point((1919, 1079), SHOT), (1535, 863))
+        self.assertEqual(executor.mouse_point((1918, 1078), SHOT), (1534, 862))
 
     def test_width_and_height_scale_separately(self):
-        executor = Executor(backend=FakeBackend((1000, 500)))
+        executor = Executor(backend=FakeBackend((1000, 500)), system="Windows")
         self.assertEqual(executor.mouse_point((100, 100), Shot(b"", 100, 100, 2000, 2000)), (50, 25))
-        self.assertEqual(executor.mouse_point((3, 3), Shot(b"", 100, 100, 2000, 2000)), (1, 0))
+        self.assertEqual(executor.mouse_point((6, 9), Shot(b"", 100, 100, 2000, 2000)), (3, 2))
+
+    def test_only_the_position_within_the_monitor_is_scaled(self):
+        # A monitor that starts at x=1920 keeps its start: only the offset inside it shrinks.
+        executor = Executor(backend=FakeBackend((1536, 864)), system="Windows")
+        shot = Shot(b"", 1280, 720, 1920, 1080, left=1920, top=0)
+        self.assertEqual(executor.mouse_point((1920 + 960, 540), shot), (1920 + 768, 432))
+        left_of_main = Shot(b"", 1280, 720, 1920, 1080, left=-1920, top=-200)
+        self.assertEqual(executor.mouse_point((-1920 + 960, -200 + 540), left_of_main), (-1920 + 768, -200 + 432))
+
+    def test_other_systems_never_scale(self):
+        # pyautogui's screen there is every monitor together (Linux) or the main display in points (Mac):
+        # a different size says nothing about scaling.
+        for system in ("Linux", "Darwin"):
+            with self.subTest(system=system):
+                executor = Executor(backend=FakeBackend((3840, 1080)), system=system)
+                self.assertEqual(executor.mouse_point((960, 540), SHOT), (960, 540))
 
     def test_unknown_monitor_size_is_left_alone(self):
-        executor = Executor(backend=FakeBackend((1536, 864)))
+        executor = Executor(backend=FakeBackend((1536, 864)), system="Windows")
         for shot in (Shot(b"", 1, 1, 0, 1080), Shot(b"", 1, 1, 1920, 0), Shot(b"", 1, 1, 0, 0)):
             with self.subTest(shot=shot):
                 self.assertEqual(executor.mouse_point((10, 20), shot), (10, 20))
+
+    def test_the_corners_are_moved_in_so_the_fail_safe_does_not_fire(self):
+        # pyautogui stops when the pointer is on a corner pixel: "Show desktop" at the bottom right
+        # would end the session as if the user had pulled the emergency stop.
+        executor = Executor(backend=FakeBackend((1920, 1080)), system="Windows")
+        for corner, moved in (((0, 0), (1, 1)), ((1919, 0), (1918, 1)), ((0, 1079), (1, 1078)), ((1919, 1079), (1918, 1078))):
+            with self.subTest(corner=corner):
+                self.assertEqual(executor.mouse_point(corner, SHOT), moved)
+
+    def test_edges_away_from_the_corners_are_left_alone(self):
+        executor = Executor(backend=FakeBackend((1920, 1080)), system="Windows")
+        for point in ((0, 1), (1, 0), (1919, 1), (1918, 1079), (0, 540), (960, 0)):
+            with self.subTest(point=point):
+                self.assertEqual(executor.mouse_point(point, SHOT), point)
+
+
+class CornerTests(unittest.TestCase):
+    def test_only_exact_corners_move(self):
+        self.assertEqual(executor_module._off_the_corners(0, 0, 100, 50), (1, 1))
+        self.assertEqual(executor_module._off_the_corners(99, 49, 100, 50), (98, 48))
+        self.assertEqual(executor_module._off_the_corners(99, 0, 100, 50), (98, 1))
+        self.assertEqual(executor_module._off_the_corners(0, 49, 100, 50), (1, 48))
+        self.assertEqual(executor_module._off_the_corners(50, 0, 100, 50), (50, 0))
+        self.assertEqual(executor_module._off_the_corners(100, 50, 100, 50), (100, 50))  # off this screen: not a corner of it
 
 
 class PointAtTests(unittest.TestCase):
@@ -128,12 +170,12 @@ class RunTests(unittest.TestCase):
                     Executor(backend=backend).run(Decision(action, x=1.0, y=2.0), None)
                 self.assertEqual(backend.calls, [])
 
-    def test_plain_text_is_typed(self):
+    def test_plain_text_is_typed_a_letter_at_a_time(self):
         backend = FakeBackend()
         clipboard = FakeClipboard(backend.calls)
-        done = Executor(backend=backend, clipboard=clipboard).run(Decision("type", text="hello world\n"), None)
-        self.assertEqual(done, "type 'hello world\\n'")
-        self.assertEqual(backend.calls, [("write", "hello world\n", 0.02)])
+        executor = Executor(backend=backend, clipboard=clipboard, key_reader=frozenset)
+        self.assertEqual(executor.run(Decision("type", text="hi you"), None), "type 'hi you'")
+        self.assertEqual(backend.calls, [("write", letter, None) for letter in "hi you"])
 
     def test_press_one_key(self):
         backend = FakeBackend()
@@ -215,58 +257,173 @@ class DryRunTests(unittest.TestCase):
             self.assertEqual(executor.run(Decision("click", x=1.0, y=2.0), (1, 2)), "(dry run, nothing done) click at (1, 2)")
 
 
-class PasteTests(unittest.TestCase):
-    def setUp(self):
-        self.slept = []
-        sleep_patch = patch.object(executor_module, "time", SimpleNamespace(sleep=self.slept.append))
-        sleep_patch.start()
-        self.addCleanup(sleep_patch.stop)
+class Keys:
+    """The modifier keys held down, read in turn (the last answer repeats)."""
 
-    def run_typing(self, backend, clipboard, system="Windows", text="café"):
-        with patch.object(executor_module.platform, "system", return_value=system):
-            return Executor(backend=backend, clipboard=clipboard).run(Decision("type", text=text), None)
+    def __init__(self, *answers):
+        self.answers = list(answers) or [frozenset()]
+        self.reads = 0
 
-    def test_other_languages_are_pasted_and_the_clipboard_put_back(self):
-        backend = FakeBackend()
-        done = self.run_typing(backend, FakeClipboard(backend.calls), text="నమస్తే café")
-        self.assertEqual(done, "type 'నమస్తే café'")
-        self.assertEqual(backend.calls, [("copy", "నమస్తే café"), ("hotkey", "ctrl", "v"), ("copy", "what the user copied")])
-        self.assertEqual(self.slept, [0.15])
+    def __call__(self):
+        self.reads += 1
+        return self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
 
-    def test_mac_pastes_with_command_v(self):
-        backend = FakeBackend()
-        self.run_typing(backend, FakeClipboard(backend.calls), system="Darwin")
-        self.assertEqual(backend.calls[1], ("hotkey", "command", "v"))
 
-    def test_linux_pastes_with_ctrl_v(self):
-        backend = FakeBackend()
-        self.run_typing(backend, FakeClipboard(backend.calls), system="Linux")
-        self.assertEqual(backend.calls[1], ("hotkey", "ctrl", "v"))
+class TypingTests(unittest.TestCase):
+    def make(self, system="Windows", keys=None, **options):
+        self.backend = FakeBackend()
+        self.typed = []
+        return Executor(
+            backend=self.backend, clipboard=FakeClipboard(self.backend.calls), key_reader=keys or Keys(),
+            unicode_typer=lambda text: self.backend.calls.append(("unicode", text)), system=system, **options,
+        )
 
-    def test_empty_clipboard_is_put_back(self):
-        backend = FakeBackend()
-        self.run_typing(backend, FakeClipboard(backend.calls, content=""))
-        self.assertEqual(backend.calls, [("copy", "café"), ("hotkey", "ctrl", "v"), ("copy", "")])
+    def test_windows_types_other_languages_as_characters_never_through_the_clipboard(self):
+        executor = self.make()
+        self.assertEqual(executor.run(Decision("type", text="నమస్తే, 5 pm"), None), "type 'నమస్తే, 5 pm'")
+        self.assertEqual(self.backend.calls, [("unicode", "నమస్తే")] + [("write", letter, None) for letter in ", 5 pm"])
 
-    def test_unreadable_clipboard_is_not_put_back(self):
-        backend = FakeBackend()
-        self.run_typing(backend, FakeClipboard(backend.calls, fail_paste=True))
-        self.assertEqual(backend.calls, [("copy", "café"), ("hotkey", "ctrl", "v")])
+    def test_windows_runs_of_each_kind_keep_their_order(self):
+        executor = self.make()
+        executor.run(Decision("type", text="a€b😀c"), None)
+        self.assertEqual(
+            self.backend.calls,
+            [("write", "a", None), ("unicode", "€"), ("write", "b", None), ("unicode", "😀"), ("write", "c", None)],
+        )
 
-    def test_clipboard_is_put_back_when_pasting_fails(self):
-        backend = FakeBackend(fail_on="hotkey")
-        with self.assertRaisesRegex(RuntimeError, "hotkey failed"):
-            self.run_typing(backend, FakeClipboard(backend.calls))
-        self.assertEqual(backend.calls, [("copy", "café"), ("hotkey", "ctrl", "v"), ("copy", "what the user copied")])
+    def test_mac_and_linux_paste_the_whole_text_once_and_leave_the_clipboard(self):
+        # The old clipboard is never put back: a busy app reading it late would paste that instead
+        # (often a password just copied) in place of the approved text.
+        for system, keys in (("Darwin", ("command", "v")), ("Linux", ("ctrl", "v"))):
+            with self.subTest(system=system):
+                executor = self.make(system=system)
+                executor.run(Decision("type", text="café au lait"), None)
+                self.assertEqual(self.backend.calls, [("copy", "café au lait"), ("hotkey", *keys)])
+
+    def test_plain_text_is_typed_on_every_system(self):
+        for system in ("Windows", "Darwin", "Linux"):
+            with self.subTest(system=system):
+                executor = self.make(system=system)
+                executor.run(Decision("type", text="ok"), None)
+                self.assertEqual(self.backend.calls, [("write", "o", None), ("write", "k", None)])
 
     def test_pyperclip_is_the_default_clipboard(self):
         backend = FakeBackend()
         pyperclip = ModuleType("pyperclip")
-        pyperclip.paste = lambda: "earlier"
         pyperclip.copy = lambda text: backend.calls.append(("copy", text))
         with patch.dict(sys.modules, {"pyperclip": pyperclip}):
-            self.run_typing(backend, None)
-        self.assertEqual(backend.calls, [("copy", "café"), ("hotkey", "ctrl", "v"), ("copy", "earlier")])
+            Executor(backend=backend, key_reader=frozenset, system="Linux").run(Decision("type", text="café"), None)
+        self.assertEqual(backend.calls, [("copy", "café"), ("hotkey", "ctrl", "v")])
+
+    def test_the_stop_key_stops_typing_at_the_next_letter(self):
+        stop = threading.Event()
+        executor = self.make()
+
+        def write(text, interval=None):
+            self.backend.calls.append(("write", text, interval))
+            if text == "c":
+                stop.set()
+
+        self.backend.write = write
+        with self.assertRaisesRegex(Interrupted, "stopped"):
+            executor.run(Decision("type", text="abcdef"), None, stop)
+        self.assertEqual(self.backend.calls, [("write", "a", None), ("write", "b", None), ("write", "c", None)])
+
+    def test_a_key_held_down_stops_typing(self):
+        # Ctrl held while typing would turn the letters into shortcuts.
+        executor = self.make(keys=Keys(frozenset(), frozenset(), frozenset({"ctrl", "alt"})))
+        with self.assertRaisesRegex(Interrupted, "alt\\+ctrl held down"):
+            executor.run(Decision("type", text="hello"), None)
+        self.assertEqual(self.backend.calls, [("write", "h", None), ("write", "e", None)])
+
+    def test_nothing_is_typed_or_pasted_with_a_key_already_held(self):
+        for system in ("Windows", "Linux"):
+            with self.subTest(system=system):
+                executor = self.make(system=system, keys=Keys(frozenset({"shift"})))
+                with self.assertRaises(Interrupted):
+                    executor.run(Decision("type", text="café"), None)
+                self.assertEqual(self.backend.calls, [])
+
+    def test_keys_that_cannot_be_read_do_not_stop_typing(self):
+        executor = self.make(keys=Keys(None))
+        executor.run(Decision("type", text="ok"), None)
+        self.assertEqual(len(self.backend.calls), 2)
+
+
+class UnicodeInputTests(unittest.TestCase):
+    def test_a_press_and_a_release_for_each_utf16_unit(self):
+        events = executor_module.unicode_inputs("é😀")
+        self.assertEqual(len(events), 6)  # é is one unit, the emoji two (a surrogate pair)
+        units = [0x00E9, 0xD83D, 0xDE00]
+        for index, event in enumerate(events):
+            with self.subTest(index=index):
+                self.assertEqual(event.type, executor_module.INPUT_KEYBOARD)
+                self.assertEqual(event.union.ki.wVk, 0)
+                self.assertEqual(event.union.ki.wScan, units[index // 2])
+                flags = executor_module.KEYEVENTF_UNICODE | (executor_module.KEYEVENTF_KEYUP if index % 2 else 0)
+                self.assertEqual(event.union.ki.dwFlags, flags)
+
+    @unittest.skipUnless(ctypes.sizeof(ctypes.c_void_p) == 8, "the layout checked is 64-bit Windows'")
+    def test_the_structure_is_the_size_windows_expects(self):
+        # SendInput refuses anything but sizeof(INPUT), 40 bytes on 64-bit Windows.
+        self.assertEqual(ctypes.sizeof(executor_module._Input), 40)
+        self.assertEqual(ctypes.sizeof(executor_module._KeyboardInput), 24)
+
+
+class ReleaseTests(unittest.TestCase):
+    def make(self, keys):
+        self.clock = [0.0]
+        self.slept = []
+
+        def sleep(seconds):
+            self.slept.append(seconds)
+            self.clock[0] += seconds
+
+        return Executor(backend=FakeBackend(), key_reader=keys, sleep=sleep, clock=lambda: self.clock[0])
+
+    def test_nothing_held_goes_at_once(self):
+        executor = self.make(Keys(frozenset()))
+        self.assertTrue(executor.wait_for_release())
+        self.assertEqual(self.slept, [])
+
+    def test_waits_while_the_yes_hotkey_is_still_held(self):
+        held = frozenset({"ctrl", "alt"})
+        keys = Keys(held, held, held, frozenset())
+        executor = self.make(keys)
+        self.assertTrue(executor.wait_for_release(timeout=2.0))
+        self.assertEqual(self.slept, [0.05, 0.05, 0.05])
+
+    def test_gives_up_when_held_past_the_timeout(self):
+        executor = self.make(Keys(frozenset({"shift"})))
+        self.assertFalse(executor.wait_for_release(timeout=1.0))
+        self.assertGreaterEqual(self.clock[0], 1.0)
+        self.assertLess(self.clock[0], 1.1)
+
+    def test_keys_that_cannot_be_read_get_a_short_pause(self):
+        executor = self.make(Keys(None))
+        self.assertTrue(executor.wait_for_release())
+        self.assertEqual(self.slept, [0.5])
+
+
+class QuestionTests(unittest.TestCase):
+    def test_window_under_a_point_and_pointer(self):
+        backend = FakeBackend()
+        backend.position = lambda: (12.0, 34.0)
+        seen = []
+        executor = Executor(backend=backend, window_reader=lambda point: seen.append(point) or "Calculator")
+        self.assertEqual(executor.window_at((5, 6)), "Calculator")
+        self.assertEqual(seen, [(5, 6)])
+        self.assertEqual(executor.pointer(), (12, 34))
+
+    def test_the_real_readers_say_none_when_they_cannot_tell(self):
+        with patch.object(executor_module.platform, "system", return_value="Darwin"):
+            self.assertIsNone(executor_module.window_at((1, 2)))
+        with patch.object(executor_module, "_x11_window_at", side_effect=RuntimeError("no display")), \
+             patch.object(executor_module.platform, "system", return_value="Linux"):
+            self.assertIsNone(executor_module.window_at((1, 2)))
+        with patch.object(executor_module, "_x11_held", side_effect=RuntimeError("no display")), \
+             patch.object(executor_module.platform, "system", return_value="Linux"):
+            self.assertIsNone(executor_module.held_modifiers())
 
 
 class BackendTests(unittest.TestCase):

@@ -10,7 +10,20 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import nexus.live.screen as screen_module
-from nexus.live.screen import NORMALIZED_SPAN, OutsideScreen, Shot, shrink, thumbnail_difference, to_screen
+from nexus.live.screen import (
+    NORMALIZED_SPAN,
+    Frame,
+    OutsideScreen,
+    Shot,
+    changed_near,
+    cover_windows,
+    grab,
+    primary_monitor,
+    share_of,
+    shrink,
+    thumbnail_difference,
+    to_screen,
+)
 
 HAS_PILLOW = importlib.util.find_spec("PIL") is not None
 
@@ -257,6 +270,37 @@ class CaptureTests(unittest.TestCase):
         quick = self.capture(FakeMss(main, pattern=True), optimize=False)
         self.assertLess(len(optimized.image), len(quick.image))
 
+    def test_the_main_monitor_is_captured_even_when_listed_second(self):
+        # A laptop with an external screen to its right, which the system lists first.
+        laptop = {"left": 0, "top": 0, "width": 40, "height": 20}
+        external = {"left": 40, "top": 0, "width": 60, "height": 30}
+        fake = FakeMss(laptop)
+        fake.monitors = [{"left": 0, "top": 0, "width": 100, "height": 30}, external, laptop]
+        shot = self.capture(fake, 100)
+        self.assertEqual(fake.grabbed, [laptop])
+        self.assertEqual((shot.screen_width, shot.left), (40, 0))
+
+
+class PrimaryMonitorTests(unittest.TestCase):
+    ALL = {"left": -1920, "top": 0, "width": 3840, "height": 1080}
+
+    def test_the_one_marked_primary(self):
+        first = {"left": -1920, "top": 0, "width": 1920, "height": 1080}
+        main = {"left": 0, "top": 0, "width": 1920, "height": 1080, "is_primary": True}
+        self.assertIs(primary_monitor([self.ALL, first, main]), main)
+        self.assertIs(primary_monitor([self.ALL, {"left": 0, "top": 0, "width": 1, "height": 1}, main]), main)
+
+    def test_without_marks_the_one_at_the_origin(self):
+        # Older mss marks none; Windows always puts the main monitor at (0, 0).
+        external = {"left": 1920, "top": 0, "width": 2560, "height": 1440}
+        laptop = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        self.assertIs(primary_monitor([self.ALL, external, laptop]), laptop)
+
+    def test_otherwise_the_first(self):
+        first = {"left": 10, "top": 0, "width": 800, "height": 600}
+        second = {"left": 810, "top": 0, "width": 800, "height": 600}
+        self.assertIs(primary_monitor([self.ALL, first, second]), first)
+
 
 @unittest.skipUnless(HAS_PILLOW, "needs Pillow")
 class ShrinkTests(unittest.TestCase):
@@ -354,6 +398,151 @@ class ThumbnailDifferenceTests(unittest.TestCase):
     @unittest.skipUnless(HAS_PILLOW, "needs Pillow")
     def test_custom_thumbnail_size(self):
         self.assertEqual(thumbnail_difference(png((2, 1), 0), png((2, 1), 0, pixels={(1, 0): 255}), size=(2, 1)), 0.5)
+
+
+@unittest.skipUnless(HAS_PILLOW, "needs Pillow")
+class ChangedNearTests(unittest.TestCase):
+    """Whether what is under a click changed between the model's look and the click."""
+
+    def test_same_picture(self):
+        picture = png((200, 100), 90)
+        self.assertEqual(changed_near(picture, picture, (0.5, 0.5)), 0.0)
+        self.assertEqual(changed_near(picture, picture, None), 0.0)
+
+    def test_a_change_under_the_point(self):
+        middle = {(x, y): 255 for x in range(80, 120) for y in range(35, 65)}
+        before, after = png((200, 100), 0), png((200, 100), 0, pixels=middle)
+        self.assertGreater(changed_near(before, after, (0.5, 0.5)), 0.9)
+
+    def test_a_change_elsewhere_does_not_count(self):
+        # A video playing in a corner, say.
+        corner = {(x, y): 255 for x in range(0, 40) for y in range(0, 30)}
+        before, after = png((200, 100), 0), png((200, 100), 0, pixels=corner)
+        self.assertEqual(changed_near(before, after, (0.75, 0.75)), 0.0)
+        self.assertGreater(changed_near(before, after, None), 0.0)
+
+    def test_the_box_is_the_span_around_the_point(self):
+        # span 0.2 of a 200 by 100 picture: 40 by 20 pixels around (100, 50).
+        inside = {(x, y): 255 for x in range(80, 120) for y in range(40, 60)}
+        outside = {(x, y): 255 for x in list(range(0, 79)) + list(range(121, 200)) for y in range(100)}
+        before = png((200, 100), 0)
+        self.assertEqual(changed_near(before, png((200, 100), 0, pixels=inside), (0.5, 0.5), span=0.2), 1.0)
+        self.assertEqual(changed_near(before, png((200, 100), 0, pixels=outside), (0.5, 0.5), span=0.2), 0.0)
+
+    def test_points_at_the_edges(self):
+        before, after = png((200, 100), 0), png((200, 100), 255)
+        for around in ((0.0, 0.0), (1.0, 1.0), (0.0, 1.0)):
+            with self.subTest(around=around):
+                self.assertEqual(changed_near(before, after, around), 1.0)
+
+    def test_screenshots_of_different_sizes_are_all_changed(self):
+        self.assertEqual(changed_near(png((200, 100), 0), png((100, 100), 0), (0.5, 0.5)), 1.0)
+
+    def test_24_grey_levels_do_not_count_but_25_do(self):
+        self.assertEqual(changed_near(png((50, 50), 100), png((50, 50), 124), (0.5, 0.5)), 0.0)
+        self.assertEqual(changed_near(png((50, 50), 100), png((50, 50), 125), (0.5, 0.5)), 1.0)
+
+
+class ShareOfTests(unittest.TestCase):
+    def test_normalized(self):
+        self.assertEqual(share_of(500, 250, SHOT, "normalized"), (0.5, 0.25))
+        self.assertEqual(share_of(0, 1000, SHOT, "normalized"), (0.0, 1.0))
+
+    def test_pixels(self):
+        shot = Shot(b"", 1280, 720, 1920, 1080)
+        self.assertEqual(share_of(640, 180, shot, "pixels"), (0.5, 0.25))
+
+
+@unittest.skipUnless(HAS_PILLOW, "needs Pillow")
+class FrameTests(unittest.TestCase):
+    def frame(self, size=(100, 50), screen=(200, 100), colour=(200, 200, 200), left=0, top=0):
+        from PIL import Image
+
+        return Frame(Image.new("RGB", size, colour), screen[0], screen[1], left, top)
+
+    def test_a_frame_is_a_png_only_when_asked(self):
+        frame = self.frame()
+        self.assertIsNone(frame._png)
+        self.assertEqual((frame.width, frame.height, frame.screen_width, frame.screen_height), (100, 50, 200, 100))
+        with opened(frame.image) as picture:
+            self.assertEqual(picture.size, (100, 50))
+        self.assertIs(frame.image, frame.image)  # made once
+
+    def test_grab_shrinks_like_capture(self):
+        main = {"left": 0, "top": 0, "width": 40, "height": 20}
+        fake = FakeMss(main)
+        with patch.dict(sys.modules, {"mss": fake.module()}), patch.object(screen_module.platform, "system", return_value="Linux"):
+            frame = grab(20)
+        self.assertEqual((frame.width, frame.height, frame.screen_width, frame.left), (20, 10, 40, 0))
+        self.assertEqual(frame.picture.getpixel((5, 5)), (10, 20, 30))
+
+
+@unittest.skipUnless(HAS_PILLOW, "needs Pillow")
+class CoverWindowsTests(unittest.TestCase):
+    """Teach mode's screenshots never show a blocked window, wherever it is on the screen."""
+
+    def frame(self):
+        from PIL import Image
+
+        # A 200 by 100 screen seen at half size.
+        return Frame(Image.new("RGB", (100, 50), (200, 200, 200)), 200, 100)
+
+    def black(self, frame, x, y):
+        return frame.picture.getpixel((x, y)) == (0, 0, 0)
+
+    def test_a_blocked_window_beside_the_one_in_use_is_blacked_out(self):
+        frame = self.frame()
+        before = frame.image  # a PNG made before covering is not the one saved
+        layout = [("Untitled - Notepad", (0, 0, 100, 100)), ("KeePass", (100, 0, 200, 100))]
+        self.assertTrue(cover_windows(frame, layout, lambda title: title == "KeePass"))
+        self.assertTrue(self.black(frame, 75, 25))
+        self.assertFalse(self.black(frame, 25, 25))
+        self.assertNotEqual(frame.image, before)
+        with opened(frame.image) as picture:
+            self.assertEqual(picture.convert("RGB").getpixel((75, 25)), (0, 0, 0))
+
+    def test_only_the_part_that_shows_is_covered(self):
+        # KeePass lies behind Notepad, which covers its left half.
+        frame = self.frame()
+        layout = [("Untitled - Notepad", (0, 0, 120, 100)), ("KeePass", (60, 0, 200, 100))]
+        cover_windows(frame, layout, lambda title: title == "KeePass")
+        self.assertFalse(self.black(frame, 55, 25))  # Notepad, over KeePass
+        self.assertTrue(self.black(frame, 65, 25))  # KeePass, where it shows
+        self.assertTrue(self.black(frame, 99, 49))
+
+    def test_a_blocked_window_on_top_covers_what_is_under_it(self):
+        frame = self.frame()
+        layout = [("KeePass", (40, 20, 80, 60)), ("Untitled - Notepad", (0, 0, 200, 100))]
+        cover_windows(frame, layout, lambda title: title == "KeePass")
+        self.assertTrue(self.black(frame, 30, 20))
+        self.assertFalse(self.black(frame, 10, 10))
+
+    def test_edges_are_covered_generously_and_uncovered_strictly(self):
+        # Half-pixel edges round outward for a hidden window, inward for one over it.
+        frame = self.frame()
+        layout = [("Notes", (0, 0, 101, 100)), ("KeePass", (99, 0, 200, 100))]
+        cover_windows(frame, layout, lambda title: title == "KeePass")
+        self.assertTrue(self.black(frame, 50, 10))  # 100 to 101 on the screen: half Notes, half KeePass
+        self.assertFalse(self.black(frame, 49, 10))
+
+    def test_nothing_hidden_leaves_the_picture_alone(self):
+        frame = self.frame()
+        original = frame.picture
+        self.assertFalse(cover_windows(frame, [("Notepad", (0, 0, 200, 100))], lambda title: False))
+        self.assertIs(frame.picture, original)
+
+    def test_windows_off_this_monitor_or_with_no_size_do_nothing(self):
+        frame = self.frame()
+        layout = [("KeePass", (-500, 0, -100, 100)), ("KeePass", (50, 50, 50, 90))]
+        self.assertFalse(cover_windows(frame, layout, lambda title: True))
+
+    def test_a_monitor_that_does_not_start_at_zero(self):
+        from PIL import Image
+
+        frame = Frame(Image.new("RGB", (100, 50), (200, 200, 200)), 200, 100, left=-200, top=0)
+        cover_windows(frame, [("KeePass", (-100, 0, 0, 100))], lambda title: True)
+        self.assertTrue(self.black(frame, 75, 25))
+        self.assertFalse(self.black(frame, 25, 25))
 
 
 if __name__ == "__main__":

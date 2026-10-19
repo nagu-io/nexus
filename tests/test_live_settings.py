@@ -11,8 +11,10 @@ from nexus.live.settings import (
     BACKENDS,
     CONFIRM_MODES,
     COORDINATE_MODES,
+    DEFAULT_BLOCKED_TITLES,
     DEFAULT_BLOCKED_WINDOWS,
     LiveSettings,
+    title_is,
     window_matches,
 )
 
@@ -43,6 +45,7 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(settings.screen_max_width, 1280)
         self.assertEqual(settings.allowed_windows, ())
         self.assertEqual(settings.blocked_windows, DEFAULT_BLOCKED_WINDOWS)
+        self.assertEqual(settings.blocked_titles, DEFAULT_BLOCKED_TITLES)
         self.assertEqual(settings.hotkey_talk, "<ctrl>+<alt>+<space>")
         self.assertEqual(settings.hotkey_stop, "<ctrl>+<alt>+q")
         self.assertEqual(settings.hotkey_yes, "<ctrl>+<alt>+y")
@@ -288,16 +291,32 @@ BLOCKED_TITLES = (
     ("C:\\Windows\\system32\\cmd.exe", "cmd.exe"),
     ("Windows Terminal", "windows terminal"),
     ("Terminal - zsh", "terminal"),
+    ("Git Bash", "git bash"),
+    ("MINGW64:/c/Users/nagu/nexus", "mingw64"),
+    ("MINGW32:/c/Users/nagu", "mingw32"),
+    ("MSYS2 MSYS", "msys2"),
+    ("Cygwin Terminal", "terminal"),
+    ("~ - Cygwin", "cygwin"),
+    ("Anaconda Prompt - nexus  live", "anaconda prompt"),
+    ("Miniforge Prompt", "miniforge prompt"),
     ("Registry Editor", "registry editor"),
     ("Local Group Policy Editor", "group policy"),
     ("Task Scheduler", "task scheduler"),
+    ("Task Manager", "task manager"),
     ("User Account Control", "user account control"),
 )
 
 
 class DefaultBlockedWindowsTests(unittest.TestCase):
     def test_every_default_word_has_a_title_here(self):
-        self.assertEqual(sorted(word for _, word in BLOCKED_TITLES), sorted(DEFAULT_BLOCKED_WINDOWS))
+        self.assertEqual(sorted({word for _, word in BLOCKED_TITLES}), sorted(DEFAULT_BLOCKED_WINDOWS))
+
+    def test_consoles_nexus_live_may_be_started_from(self):
+        # Typing into any of these runs a command; the review found these titles slip past the first list.
+        for title in ("Windows PowerShell", "Command Prompt - nexus  live", "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+                      "MINGW64:/c/Users/nagu/nexus", "Anaconda Prompt - nexus  live", "Administrator: Windows PowerShell"):
+            with self.subTest(title=title):
+                self.assertIsNotNone(window_matches(title, DEFAULT_BLOCKED_WINDOWS))
 
     def test_every_default_word_blocks_its_window(self):
         for title, word in BLOCKED_TITLES:
@@ -378,10 +397,39 @@ class WindowMatchesTests(unittest.TestCase):
         self.assertIsNone(window_matches("", ("bank",)))
         self.assertIsNone(window_matches("My Bank", ()))
 
+    def test_runs_of_spaces_count_as_one(self):
+        self.assertEqual(window_matches("Command   Prompt", ("command prompt",)), "command prompt")
+        self.assertEqual(window_matches("nexus\t live", ("nexus live",)), "nexus live")
+        self.assertEqual(window_matches("  My Bank  ", ("bank",)), "bank")
+
     def test_empty_words_are_skipped(self):
         self.assertIsNone(window_matches("- -", ("",)))
         self.assertIsNone(window_matches("", ("",)))
         self.assertEqual(window_matches("my bank", ("", "bank")), "bank")
+
+
+class TitleIsTests(unittest.TestCase):
+    def test_the_whole_title_must_match(self):
+        self.assertEqual(title_is("Run", ("run",)), "run")
+        self.assertIsNone(title_is("Run - Notepad", ("run",)))
+        self.assertIsNone(title_is("Running", ("run",)))
+
+    def test_case_and_spacing_do_not_matter(self):
+        self.assertEqual(title_is("  TASK   view ", ("task view",)), "task view")
+        self.assertEqual(title_is("search", ("Search",)), "Search")
+
+    def test_nothing_to_match(self):
+        self.assertIsNone(title_is(None, ("run",)))
+        self.assertIsNone(title_is("", ("run",)))
+        self.assertIsNone(title_is("", ("",)))
+        self.assertIsNone(title_is("Run", ()))
+
+    def test_the_default_whole_titles(self):
+        self.assertEqual(
+            DEFAULT_BLOCKED_TITLES,
+            ("run", "start", "search", "cortana", "task view", "task switching", "action center",
+             "notification center", "quick settings", "services"),
+        )
 
 
 if __name__ == "__main__":

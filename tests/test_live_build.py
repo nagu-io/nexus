@@ -2,20 +2,27 @@
 
 import argparse
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from nexus.live import build
-from nexus.live.build import RunLog
+from nexus.live.build import PublicRepo, RunLog, ensure_private
 
 
 class FakeApi:
-    def __init__(self, fail_uploads=False):
+    """The Hub: ``public`` names repos that already exist and are public."""
+
+    def __init__(self, fail_uploads=False, public=()):
         self.created = []
         self.uploads = []
         self.fail_uploads = fail_uploads
+        self.public = set(public)
 
-    def create_repo(self, repo, private, exist_ok):
+    def create_repo(self, repo, repo_type=None, private=False, exist_ok=False):
         self.created.append((repo, private, exist_ok))
+
+    def repo_info(self, repo, repo_type=None):
+        return SimpleNamespace(private=repo not in self.public)
 
     def upload_file(self, path_or_fileobj, path_in_repo, repo_id, commit_message):
         if self.fail_uploads:
@@ -73,6 +80,26 @@ class RunLogTests(unittest.TestCase):
         text = self.api.uploads[-1][2]
         self.assertIn("FAILED: RuntimeError: CUDA out of memory", text)
         self.assertIn("Traceback", text)
+
+
+class PrivateRepoTests(unittest.TestCase):
+    def test_a_new_or_private_repo_is_fine(self):
+        api = FakeApi()
+        ensure_private(api, "me/nexus-teach", "dataset")
+        self.assertEqual(api.created, [("me/nexus-teach", True, True)])
+
+    def test_an_existing_public_repo_is_refused(self):
+        # create_repo(exist_ok=True) leaves a public repo public: the run log, raw answers or teach
+        # screenshots would have gone public while the console said "private".
+        api = FakeApi(public={"me/nexus-vision"})
+        with self.assertRaisesRegex(PublicRepo, "already exists and is public"):
+            ensure_private(api, "me/nexus-vision")
+
+    def test_the_run_log_refuses_a_public_repo_before_any_work(self):
+        api = FakeApi(public={"me/nexus-vision"})
+        with self.assertRaises(PublicRepo):
+            RunLog("me/nexus-vision", lambda line: None, api=api)
+        self.assertEqual(api.uploads, [])
 
 
 class RunTests(unittest.TestCase):

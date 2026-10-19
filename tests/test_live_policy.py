@@ -4,8 +4,8 @@ import dataclasses
 import unittest
 
 from nexus.live.model import Decision, parse_decision
-from nexus.live.policy import ALLOW, CONFIRM, REFUSE, SYSTEM_COMBOS, SYSTEM_KEYS, Policy, Verdict
-from nexus.live.settings import DEFAULT_BLOCKED_WINDOWS, LiveSettings
+from nexus.live.policy import ALLOW, CONFIRM, REFUSE, SYSTEM_COMBOS, SYSTEM_KEYS, Policy, Verdict, lands_at_a_point, own_hotkeys
+from nexus.live.settings import DEFAULT_BLOCKED_TITLES, DEFAULT_BLOCKED_WINDOWS, LiveSettings
 
 NOTEPAD = "Untitled - Notepad"
 
@@ -30,10 +30,15 @@ WINDOWS_KEY = "I don't use the Windows key: it opens the Run box and system menu
 SYSTEM_COMBO = "I don't press system key combinations like that one."
 UNKNOWN_WINDOW = "I can't tell which window is in front."
 UNKNOWN_WINDOW_ALLOWLIST = "I can't tell which window is in front, so I can't check it is one I'm allowed to use."
+UNKNOWN_POINT = "I can't tell which window is under that point."
+UNKNOWN_POINT_ALLOWLIST = "I can't tell which window is under that point, so I can't check it is one I'm allowed to use."
+OWN_HOTKEY = "That is one of my own hotkeys, so I don't press it."
+SAME = object()
 
 
-def check(decision, title=NOTEPAD, **settings):
-    return Policy(LiveSettings(**settings)).check(decision, title)
+def check(decision, title=NOTEPAD, point=SAME, **settings):
+    """The verdict, with the window under a click or scroll the same as the one in front unless ``point`` says otherwise."""
+    return Policy(LiveSettings(**settings)).check(decision, title, title if point is SAME else point)
 
 
 def keys(*names):
@@ -46,7 +51,14 @@ class ConstantTests(unittest.TestCase):
 
     def test_system_keys(self):
         self.assertEqual(SYSTEM_KEYS, frozenset({"win"}))
-        self.assertEqual(SYSTEM_COMBOS, (frozenset({"ctrl", "alt", "delete"}), frozenset({"ctrl", "shift", "esc"})))
+        self.assertEqual(
+            SYSTEM_COMBOS,
+            (frozenset({"ctrl", "alt", "delete"}), frozenset({"ctrl", "shift", "esc"}), frozenset({"ctrl", "esc"})),
+        )
+
+    def test_steps_that_land_at_a_point(self):
+        self.assertEqual([lands_at_a_point(step) for step in POINTER_STEPS], [True] * 5)
+        self.assertEqual([lands_at_a_point(step) for step in KEYBOARD_STEPS + QUIET_STEPS], [False] * 6)
 
     def test_verdict(self):
         self.assertEqual(Verdict(ALLOW), Verdict("allow", ""))
@@ -104,6 +116,12 @@ class SystemKeyTests(unittest.TestCase):
                 decision = parse_decision({"action": "hotkey", "keys": names})
                 self.assertEqual(check(decision), Verdict(REFUSE, SYSTEM_COMBO))
 
+    def test_ctrl_esc_opens_start_like_the_windows_key(self):
+        for names in (("ctrl", "esc"), ("esc", "ctrl"), ("ctrl", "alt", "esc"), ("ctrl", "esc", "a")):
+            with self.subTest(keys=names):
+                self.assertEqual(check(keys(*names)), Verdict(REFUSE, SYSTEM_COMBO))
+                self.assertEqual(check(keys(*names), confirm="risky"), Verdict(REFUSE, SYSTEM_COMBO))
+
     def test_part_of_a_system_combination_is_only_asked_about(self):
         for names in (
             ("ctrl", "alt"),
@@ -111,13 +129,13 @@ class SystemKeyTests(unittest.TestCase):
             ("ctrl", "delete"),
             ("ctrl", "shift"),
             ("shift", "esc"),
-            ("ctrl", "esc"),
-            ("ctrl", "alt", "esc"),
+            ("alt", "esc"),
             ("ctrl", "shift", "delete"),
             ("alt", "shift", "esc"),
         ):
             with self.subTest(keys=names):
                 self.assertEqual(check(keys(*names)), Verdict(CONFIRM))
+        self.assertEqual(check(Decision("press", keys=("esc",))), Verdict(CONFIRM))
 
 
 class UnknownWindowTests(unittest.TestCase):
@@ -206,7 +224,102 @@ class ConfirmModeTests(unittest.TestCase):
                 self.assertEqual(check(decision, confirm="risky"), Verdict(CONFIRM))
 
     def test_default_is_to_ask_about_everything(self):
-        self.assertEqual(Policy(LiveSettings()).check(CLICK, NOTEPAD), Verdict(CONFIRM))
+        self.assertEqual(Policy(LiveSettings()).check(CLICK, NOTEPAD, NOTEPAD), Verdict(CONFIRM))
+        self.assertEqual(Policy(LiveSettings()).check(TYPE, NOTEPAD), Verdict(CONFIRM))
+
+
+class PointWindowTests(unittest.TestCase):
+    """A click or scroll lands in the window under its point, which is checked as well as the one in front."""
+
+    def test_a_blocked_window_under_the_point_is_refused(self):
+        for decision in POINTER_STEPS:
+            for confirm in ("all", "risky"):
+                with self.subTest(action=decision.action, confirm=confirm):
+                    self.assertEqual(
+                        check(decision, NOTEPAD, "KeePass - Database.kdbx", confirm=confirm),
+                        Verdict(REFUSE, "The window under that point looks like 'keepass', which I never act in. Please do this part yourself."),
+                    )
+
+    def test_an_unknown_window_under_the_point_is_asked_about_even_in_risky_mode(self):
+        for decision in POINTER_STEPS:
+            with self.subTest(action=decision.action):
+                self.assertEqual(check(decision, NOTEPAD, None, confirm="risky"), Verdict(CONFIRM, UNKNOWN_POINT))
+                self.assertEqual(check(decision, NOTEPAD, None), Verdict(CONFIRM, UNKNOWN_POINT))
+
+    def test_an_unknown_window_under_the_point_is_refused_with_an_allowed_list(self):
+        self.assertEqual(check(CLICK, NOTEPAD, None, allowed_windows=("notepad",)), Verdict(REFUSE, UNKNOWN_POINT_ALLOWLIST))
+
+    def test_the_window_under_the_point_must_be_allowed_too(self):
+        self.assertEqual(
+            check(CLICK, NOTEPAD, "Calculator", confirm="risky", allowed_windows=("notepad",)),
+            Verdict(REFUSE, "'Calculator' is not one of the windows I'm allowed to use."),
+        )
+
+    def test_another_ordinary_window_under_the_point_is_fine(self):
+        self.assertEqual(check(CLICK, NOTEPAD, "Calculator", confirm="risky"), Verdict(ALLOW))
+        self.assertEqual(check(CLICK, NOTEPAD, "Calculator"), Verdict(CONFIRM))
+
+    def test_the_window_in_front_is_judged_first(self):
+        verdict = check(CLICK, "Online Banking - Chrome", "KeePass")
+        self.assertIn("The window in front looks like 'banking'", verdict.reason)
+        # A refusal for the point beats a question about the window in front.
+        self.assertEqual(check(CLICK, None, "KeePass").outcome, REFUSE)
+
+    def test_keys_and_typing_go_to_the_window_in_front_only(self):
+        for decision in KEYBOARD_STEPS:
+            with self.subTest(action=decision.action):
+                self.assertEqual(check(decision, NOTEPAD, "KeePass"), Verdict(CONFIRM))
+                self.assertEqual(check(decision, NOTEPAD, None), Verdict(CONFIRM))
+
+
+class WholeTitleTests(unittest.TestCase):
+    def test_the_run_box_start_and_search_are_refused(self):
+        for title in ("Run", "Start", "Search", "Cortana", "Task View", "Task Switching", "Quick settings", "Services"):
+            for decision in (TYPE, CLICK, PRESS):
+                with self.subTest(title=title, action=decision.action):
+                    verdict = check(decision, title)
+                    self.assertEqual(verdict.outcome, REFUSE)
+                    self.assertIn("which I never act in", verdict.reason)
+
+    def test_case_and_spacing_do_not_matter(self):
+        for title in ("RUN", " run ", "Task  view", "SEARCH"):
+            with self.subTest(title=title):
+                self.assertEqual(check(TYPE, title).outcome, REFUSE)
+
+    def test_titles_with_those_words_in_them_are_fine(self):
+        for title in ("How to run Python - Google Chrome", "Start here.txt - Notepad", "Search results - Explorer", "Runner"):
+            with self.subTest(title=title):
+                self.assertEqual(check(TYPE, title), Verdict(CONFIRM))
+
+    def test_the_settings_list_is_the_one_used(self):
+        self.assertEqual(check(TYPE, "Run", blocked_titles=()), Verdict(CONFIRM))
+        self.assertEqual(check(TYPE, "Notes", blocked_titles=DEFAULT_BLOCKED_TITLES + ("notes",)).outcome, REFUSE)
+
+
+class OwnHotkeyTests(unittest.TestCase):
+    def test_the_default_hotkeys(self):
+        self.assertEqual(
+            own_hotkeys(LiveSettings()),
+            (frozenset({"ctrl", "alt", "space"}), frozenset({"ctrl", "alt", "q"}), frozenset({"ctrl", "alt", "y"}), frozenset({"ctrl", "alt", "n"})),
+        )
+
+    def test_the_model_cannot_press_them(self):
+        for names in (("ctrl", "alt", "y"), ("alt", "ctrl", "n"), ("ctrl", "alt", "q"), ("ctrl", "alt", "space"), ("ctrl", "alt", "shift", "y")):
+            for confirm in ("all", "risky"):
+                with self.subTest(keys=names, confirm=confirm):
+                    self.assertEqual(check(keys(*names), confirm=confirm), Verdict(REFUSE, OWN_HOTKEY))
+
+    def test_other_combinations_with_those_keys_are_only_asked_about(self):
+        for names in (("ctrl", "y"), ("alt", "q"), ("ctrl", "shift", "n"), ("ctrl", "space")):
+            with self.subTest(keys=names):
+                self.assertEqual(check(keys(*names)), Verdict(CONFIRM))
+        self.assertEqual(check(Decision("press", keys=("y",))), Verdict(CONFIRM))
+
+    def test_hotkeys_from_the_settings(self):
+        settings = {"hotkey_yes": "<ctrl>+<shift>+y", "hotkey_talk": "<cmd>+<f9>"}
+        self.assertEqual(check(keys("ctrl", "shift", "y"), **settings), Verdict(REFUSE, OWN_HOTKEY))
+        self.assertEqual(check(keys("ctrl", "alt", "y"), **settings), Verdict(CONFIRM))
+        self.assertEqual(own_hotkeys(LiveSettings(**settings))[0], frozenset({"win", "f9"}))
 
 
 if __name__ == "__main__":

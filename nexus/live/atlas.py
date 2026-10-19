@@ -23,7 +23,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Sequence
 
-from nexus.live.data import Example, atlas_elements, atlas_examples, choose, write_examples
+from nexus.live.data import (
+    IMAGES_DIR,
+    Example,
+    atlas_elements,
+    atlas_examples,
+    atlas_image_path,
+    choose,
+    save_screenshot,
+    write_examples,
+)
 
 REPO = "OS-Copilot/OS-Atlas-data"
 # The annotations and the archive parts of each desktop system, in the dataset repo.
@@ -184,9 +193,18 @@ class RemoteArchive:
         return cls(list(parts), opener, by_name)
 
     def fetch(
-        self, names: Sequence[str], workers: int = 8, progress: Callable[[int, int], None] | None = None
-    ) -> tuple[dict[str, bytes], list[str]]:
-        """The files named (by file name), fetched in parallel; and the names that could not be read."""
+        self,
+        names: Sequence[str],
+        workers: int = 8,
+        progress: Callable[[int, int], None] | None = None,
+        keep: Callable[[str, bytes], Any] | None = None,
+    ) -> tuple[dict[str, Any], list[str]]:
+        """The files named (by file name), fetched in parallel; and the names that could not be read.
+
+        With ``keep``, each file is handed to it as it arrives (to write it to
+        disk, say), and what it returns is kept instead of the bytes: thousands
+        of screenshots are never all in memory at once.
+        """
         wanted = [name for name in dict.fromkeys(Path(name).name for name in names)]
         found: dict[str, bytes] = {}
         missing: list[str] = [name for name in wanted if name not in self.by_name]
@@ -207,8 +225,9 @@ class RemoteArchive:
                 with lock:
                     missing.append(name)
                 return
+            kept = keep(name, data) if keep is not None else data
             with lock:
-                found[name] = data
+                found[name] = kept
                 done[0] += 1
                 if progress:
                     progress(done[0], len(wanted))
@@ -268,26 +287,34 @@ class RangeFile(io.RawIOBase):
         headers = {**self._headers, "Range": f"bytes={self._position}-{end}"}
         for attempt in range(self._retries + 1):
             try:
-                response = self._client.get(self.url, headers=headers)
+                # Streamed, so the status is read before the body: a server that ignores the range
+                # would otherwise send the whole multi-gigabyte part into memory before the error.
+                with self._client.stream("GET", self.url, headers=headers) as response:
+                    status = response.status_code
+                    if status == 416:  # asked for bytes past the end
+                        return 0
+                    if status == 206:
+                        filled = 0
+                        for chunk in response.iter_bytes():
+                            take = min(len(chunk), len(view) - filled)
+                            view[filled : filled + take] = chunk[:take]
+                            filled += take
+                            if filled == len(view):
+                                break
+                        self._position += filled
+                        return filled
             except httpx.HTTPError as error:
                 if attempt == self._retries:
                     raise OSError(f"could not read {self.url}: {type(error).__name__}") from None
                 time.sleep(2**attempt)
                 continue
-            if response.status_code == 416:  # asked for bytes past the end
-                return 0
-            if response.status_code == 206:
-                break
-            if response.status_code in (429, 500, 502, 503, 504) and attempt < self._retries:
+            if status in (429, 500, 502, 503, 504) and attempt < self._retries:
                 time.sleep(2**attempt)
                 continue
-            if response.status_code == 200:
+            if status == 200:
                 raise OSError(f"{self.url} does not support ranged reads")
-            raise OSError(f"{self.url} answered {response.status_code}")
-        data = response.content[: len(view)]
-        view[: len(data)] = data
-        self._position += len(data)
-        return len(data)
+            raise OSError(f"{self.url} answered {status}")
+        raise OSError(f"could not read {self.url}")
 
     def close(self) -> None:
         self._client.close()
@@ -371,17 +398,21 @@ def fetch_os_atlas(
         if done % 200 == 0 or done == total:
             printer(f"  {done} of {total} screenshots")
 
-    found, missing = archive.fetch([name for name, _ in chosen], workers=workers, progress=report)
+    full_names = {Path(name).name: name for name, _ in chosen}
+    (Path(out_folder) / IMAGES_DIR).mkdir(parents=True, exist_ok=True)
+
+    def keep(name: str, data: bytes) -> bool:
+        # Shrunk and written as it arrives: a big run holds only the screenshots in flight.
+        try:
+            save_screenshot(data, atlas_image_path(out_folder, full_names[name]), max_width)
+            return True
+        except Exception:  # a broken image is left out
+            return False
+
+    found, missing = archive.fetch([name for name, _ in chosen], workers=workers, progress=report, keep=keep)
     if missing:
         printer(f"{len(missing)} screenshots could not be read and are left out.")
-    examples = atlas_examples(
-        chosen,
-        lambda name: found.get(Path(name).name),
-        out_folder,
-        max_width=max_width,
-        seed=seed,
-        done_share=done_share,
-    )
+    examples = atlas_examples(chosen, lambda name: None, out_folder, max_width=max_width, seed=seed, done_share=done_share)
     for example in examples:  # tell the systems apart, so one can be held out or weighed
         example.source = f"os-atlas-{system}"
     return examples

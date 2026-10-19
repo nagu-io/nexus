@@ -8,7 +8,7 @@ from types import ModuleType
 from unittest.mock import patch
 
 import nexus.live.voice as voice_module
-from nexus.live.voice import HotkeyConfirmer, Speaker, hotkey_words
+from nexus.live.voice import WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, HotkeyConfirmer, Speaker, hotkey_filter, hotkey_keys, hotkey_words
 
 
 class HotkeyWordsTests(unittest.TestCase):
@@ -326,6 +326,109 @@ class HotkeyConfirmerTests(unittest.TestCase):
 
     def test_default_wait(self):
         self.assertEqual(HotkeyConfirmer(ListeningSpeaker(), "<ctrl>+<alt>+y", "<ctrl>+<alt>+n").timeout, 30.0)
+
+
+class HotkeyKeysTests(unittest.TestCase):
+    def test_modifiers_and_the_last_key(self):
+        self.assertEqual(hotkey_keys("<ctrl>+<alt>+y"), (frozenset({"ctrl", "alt"}), "y"))
+        self.assertEqual(hotkey_keys("<ctrl>+<alt>+<space>"), (frozenset({"ctrl", "alt"}), "space"))
+        self.assertEqual(hotkey_keys("<CTRL_L>+<shift_r>+Q"), (frozenset({"ctrl", "shift"}), "q"))
+        self.assertEqual(hotkey_keys("<cmd>+<alt_gr>+<f9>"), (frozenset({"win", "alt"}), "f9"))
+
+    def test_odd_hotkeys(self):
+        self.assertEqual(hotkey_keys("y"), (frozenset(), "y"))
+        self.assertEqual(hotkey_keys(""), (frozenset(), ""))
+        self.assertEqual(hotkey_keys(" + "), (frozenset(), ""))
+
+
+class HookData:
+    def __init__(self, code):
+        self.vkCode = code
+
+
+class Suppressed(Exception):
+    pass
+
+
+class FakeListener:
+    def __init__(self):
+        self.suppressed = 0
+
+    def suppress_event(self):
+        self.suppressed += 1
+        raise Suppressed()
+
+
+class HotkeyFilterTests(unittest.TestCase):
+    """On Windows the hotkeys' last key is kept from the window being worked on (Ctrl+Alt+Q is @ in German)."""
+
+    def setUp(self):
+        self.fired = []
+        self.held = frozenset({"ctrl", "alt"})
+        self.listener = FakeListener()
+        callbacks = {
+            "<ctrl>+<alt>+y": lambda: self.fired.append("yes"),
+            "<ctrl>+<alt>+q": lambda: self.fired.append("stop"),
+            "<ctrl>+<alt>+<space>": lambda: self.fired.append("talk"),
+        }
+        threads = []
+        real_thread = threading.Thread
+
+        def run_now(target, name=None, daemon=None):
+            thread = real_thread(target=target, name=name, daemon=daemon)
+            threads.append(thread)
+            return thread
+
+        patcher = patch.object(voice_module.threading, "Thread", side_effect=run_now)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.threads = threads
+        self.filter = hotkey_filter(callbacks, lambda: self.listener, held=lambda: self.held)
+
+    def send(self, message, code):
+        """True when the key goes on to the window (and pynput); False when it was kept back."""
+        try:
+            self.filter(message, HookData(code))
+        except Suppressed:
+            return False
+        finally:
+            for thread in self.threads:
+                thread.join(5)
+        return True
+
+    def test_the_hotkey_fires_and_its_key_is_kept_back(self):
+        self.assertFalse(self.send(WM_KEYDOWN, ord("Y")))
+        self.assertEqual(self.fired, ["yes"])
+        self.assertFalse(self.send(WM_KEYUP, ord("Y")))
+        self.assertFalse(self.send(WM_SYSKEYDOWN, 0x20))
+        self.assertEqual(self.fired, ["yes", "talk"])
+
+    def test_a_repeating_key_fires_once(self):
+        for _ in range(3):
+            self.assertFalse(self.send(WM_KEYDOWN, ord("Q")))
+        self.assertEqual(self.fired, ["stop"])
+        self.send(WM_KEYUP, ord("Q"))
+        self.send(WM_KEYDOWN, ord("Q"))
+        self.assertEqual(self.fired, ["stop", "stop"])
+
+    def test_the_letter_alone_or_with_other_modifiers_goes_through(self):
+        for held in (frozenset(), frozenset({"ctrl"}), frozenset({"ctrl", "alt", "shift"}), frozenset({"alt"})):
+            with self.subTest(held=held):
+                self.held = held
+                self.assertTrue(self.send(WM_KEYDOWN, ord("Y")))
+                self.assertTrue(self.send(WM_KEYUP, ord("Y")))
+        self.assertEqual(self.fired, [])
+
+    def test_other_keys_go_through(self):
+        self.assertTrue(self.send(WM_KEYDOWN, ord("A")))
+        self.assertTrue(self.send(0x0104, 0x11))  # Ctrl itself
+        self.assertEqual(self.listener.suppressed, 0)
+
+    def test_a_mistake_in_the_filter_never_costs_the_hotkeys(self):
+        self.held = None
+        broken = hotkey_filter({"<ctrl>+<alt>+y": lambda: None}, lambda: self.listener, held=lambda: 1 / 0)
+        self.assertTrue(broken(WM_KEYDOWN, HookData(ord("Y"))))
+        self.assertTrue(broken(WM_KEYDOWN, object()))  # no vkCode at all
 
 
 if __name__ == "__main__":

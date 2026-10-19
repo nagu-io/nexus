@@ -8,6 +8,7 @@ import os
 import random
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -150,6 +151,14 @@ class ArchiveTests(unittest.TestCase):
         read_member(source, info)
         self.assertLessEqual(self.opener.reads - before, 2)  # 2 when the file straddles two parts
 
+    def test_each_file_can_be_handed_on_as_it_arrives(self):
+        kept = []
+        archive = RemoteArchive.open(self.parts, self.opener)
+        found, missing = archive.fetch(list(self.files), workers=2, keep=lambda name, data: kept.append(name) or len(data))
+        self.assertEqual(sorted(kept), sorted(Path(name).name for name in self.files))
+        self.assertEqual(found, {Path(name).name: len(data) for name, data in self.files.items()})
+        self.assertEqual(missing, [])
+
     def test_progress_is_reported(self):
         archive = RemoteArchive.open(self.parts, self.opener)
         calls = []
@@ -192,6 +201,7 @@ class RangeHandler(http.server.BaseHTTPRequestHandler):
     files: dict[str, bytes] = {}
     requests: list[str] = []
     honour_ranges = True
+    sent = 0
 
     def log_message(self, *args):
         pass
@@ -204,6 +214,18 @@ class RangeHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         name = self.path[len("/cdn/") :]
+        if name == "huge-without-ranges":  # a server that ignores the range and starts on 64 MB, slowly
+            self.send_response(200)
+            self.send_header("Content-Length", str(64 * 1024 * 1024))
+            self.end_headers()
+            try:
+                for _ in range(1024):
+                    self.wfile.write(b"x" * 65536)
+                    type(self).sent += 65536
+                    time.sleep(0.01)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         data = self.files.get(name)
         if data is None:
             self.send_response(404)
@@ -283,6 +305,16 @@ class RangeFileTests(unittest.TestCase):
         with self.assertRaisesRegex(OSError, "does not support ranged reads"):
             handle.read(10)
         handle.close()
+
+    def test_the_status_is_read_before_the_body(self):
+        # Reading the whole answer first held a 20 GB archive part in memory before the error.
+        handle = RangeFile(f"{self.base}/resolve/huge-without-ranges", retries=0)
+        started = time.monotonic()
+        with self.assertRaisesRegex(OSError, "does not support ranged reads"):
+            handle.read(100)
+        self.assertLess(time.monotonic() - started, 5.0)  # all of it would take over ten seconds
+        handle.close()
+        self.assertLess(RangeHandler.sent, 32 * 1024 * 1024)
 
     def test_missing_file(self):
         handle = RangeFile(f"{self.base}/resolve/nope", retries=0)

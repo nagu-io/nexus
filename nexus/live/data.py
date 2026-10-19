@@ -19,6 +19,7 @@ import json
 import math
 import os
 import random
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -26,6 +27,7 @@ from typing import Any, Callable, Iterable
 from nexus.live.model import (
     POINTER_ACTIONS,
     PROMPT_VERSION,
+    SPECIAL_TOKEN_TEXT,
     Decision,
     DecisionError,
     chat_messages,
@@ -69,6 +71,11 @@ class Example:
             left, top, right, bottom = self.box
             if not (0 <= left < right <= NORMALIZED_SPAN and 0 <= top < bottom <= NORMALIZED_SPAN):
                 raise ValueError(f"{self.id}: the box is not on the screenshot")
+        texts = [self.request, *self.steps, *(str(part) for item in self.conversation for part in item)]
+        texts += [value for value in self.target.values() if isinstance(value, str)]
+        if any(SPECIAL_TOKEN_TEXT.search(text) for text in texts):
+            # The tokenizer reads it as a real chat-turn marker: it would forge a turn, and cut the answer short.
+            raise ValueError(f"{self.id}: text that reads as one of the model's control tokens, such as <|im_end|>")
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -177,13 +184,30 @@ def clean_box(raw: Any) -> tuple[float, float, float, float] | None:
     return clipped
 
 
+# Instructions that are a page's code, not words a person would use: "Class: octicon arrow-symbol-mktg".
+CODE_INSTRUCTION = re.compile(
+    r"^\s*(class|classname|id|xpath|css|selector|aria-label|role)\s*[:=]|\b(octicon|glyphicon|material-icons)\b",
+    re.IGNORECASE,
+)
+
+
+def _usable_instruction(instruction: str) -> bool:
+    return (
+        bool(instruction)
+        and len(instruction) <= 200
+        and not CODE_INSTRUCTION.search(instruction)
+        and not SPECIAL_TOKEN_TEXT.search(instruction)
+    )
+
+
 def atlas_elements(annotations: Any) -> dict[str, list[AtlasElement]]:
     """The usable elements of OS-Atlas annotations, by screenshot name.
 
     Reads both layouts it uses: the desktop files group the elements under each
     screenshot ({img_filename, elements: [{instruction, bbox}]}), the others have
     one element per entry ({img_filename, instruction, bbox}). An instruction
-    that names two elements on one screenshot is left out, as it is ambiguous.
+    that names two elements on one screenshot is left out, as it is ambiguous,
+    and so is one that is a page's code rather than words (a CSS class name).
     """
     if isinstance(annotations, dict):
         annotations = annotations.get("data") or annotations.get("annotations") or []
@@ -204,7 +228,7 @@ def atlas_elements(annotations: Any) -> dict[str, list[AtlasElement]]:
             counts = seen.setdefault(name, {})
             key = instruction.lower()
             counts[key] = counts.get(key, 0) + 1
-            if instruction and len(instruction) <= 200 and box is not None:
+            if _usable_instruction(instruction) and box is not None:
                 by_image.setdefault(name, []).append(AtlasElement(instruction, box))
     for name, elements in list(by_image.items()):
         unique = [element for element in elements if seen[name][element.instruction.lower()] == 1]
@@ -246,6 +270,11 @@ def request_for(instruction: str, rng: random.Random | None = None) -> str:
     return template.format(q=f'"{text}"')
 
 
+def atlas_image_path(out_folder: Path, name: str) -> Path:
+    """Where the screenshot ``name`` of OS-Atlas is kept in the dataset ``out_folder``."""
+    return Path(out_folder) / IMAGES_DIR / f"atlas-{hashlib.sha1(name.encode('utf-8')).hexdigest()[:16]}.png"
+
+
 def atlas_examples(
     chosen: list[tuple[str, list[AtlasElement]]],
     read_image: Callable[[str], bytes | None],
@@ -261,12 +290,11 @@ def atlas_examples(
     already taken, and the answer "done", so the model learns to stop.
     """
     rng = random.Random(seed)
-    images_out = Path(out_folder) / IMAGES_DIR
-    images_out.mkdir(parents=True, exist_ok=True)
+    (Path(out_folder) / IMAGES_DIR).mkdir(parents=True, exist_ok=True)
     examples: list[Example] = []
     for name, elements in chosen:
-        stem = hashlib.sha1(name.encode("utf-8")).hexdigest()[:16]
-        target_image = images_out / f"atlas-{stem}.png"
+        target_image = atlas_image_path(out_folder, name)
+        stem = target_image.stem[len("atlas-"):]
         if not target_image.exists():
             data = read_image(name)
             if data is None:

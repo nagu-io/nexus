@@ -36,8 +36,10 @@ class ScreenWatcher:
         self.difference = difference
         self.paused = threading.Event()  # set while a request is being handled
         self._stop = threading.Event()
+        self._looking = threading.Lock()  # held for the whole of each look
         self._last_image: bytes | None = None
         self._last_said = ""
+        self._last_problem = ""
 
     def look_once(self) -> str:
         """One look: says and returns what needs attention, or returns an empty string."""
@@ -48,7 +50,8 @@ class ScreenWatcher:
             return ""
         try:
             said = self.observer.observe(shot).strip()
-        except ModelUnavailable:
+        except ModelUnavailable as error:
+            self._problem(str(error))
             return ""
         if not said or said == self._last_said:
             return ""
@@ -56,10 +59,35 @@ class ScreenWatcher:
         self.speaker.say(said)
         return said
 
+    def _problem(self, message: str) -> None:
+        """Say why watch mode could not look, once for each new reason; it keeps trying."""
+        if message != self._last_problem:
+            self._last_problem = message
+            self.speaker.say(f"Watch mode couldn't look at the screen ({message}). I'll keep trying.")
+
     def run(self) -> None:
         while not self._stop.wait(self.interval):
-            if not self.paused.is_set():
-                self.look_once()
+            with self._looking:
+                if self.paused.is_set():
+                    continue
+                try:
+                    self.look_once()
+                except Exception as error:  # one failed look (out of memory, a screenshot error) never ends watching
+                    self._problem(f"{type(error).__name__}: {error}")
+
+    def pause(self) -> None:
+        """Stop looking, and wait for a look under way to finish.
+
+        A request is about to use the model: it must not take its screenshot
+        while a look is still holding the model, then wait for it and act on
+        a screen that has moved on.
+        """
+        self.paused.set()
+        with self._looking:
+            pass
+
+    def resume(self) -> None:
+        self.paused.clear()
 
     def stop(self) -> None:
         self._stop.set()

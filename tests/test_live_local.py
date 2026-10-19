@@ -87,6 +87,13 @@ class CardTests(unittest.TestCase):
         with self.assertRaisesRegex(ModelUnavailable, "No NEXUS Vision model"):
             vision.ask("open notepad", [], [], b"png", "normalized")
 
+    def test_a_failed_question_leaves_no_generation_from_before(self):
+        vision = LocalVision(self.root / "missing")
+        vision.last_generation = {"new_tokens": 7, "raw": "an earlier answer"}
+        with self.assertRaises(ModelUnavailable):
+            vision.ask("open notepad", [], [], b"png", "normalized")
+        self.assertEqual(vision.last_generation, {})
+
 
 class BackendWiringTests(unittest.TestCase):
     def test_each_backend_gets_its_model(self):
@@ -177,6 +184,13 @@ class ChecksTests(unittest.TestCase):
         vision = [line for line in lines if line[1] == "NEXUS Vision"]
         self.assertEqual(vision[0][0], "ok")
         self.assertIn("4321 examples", vision[0][2])
+
+    def test_the_desktop_readers_are_tried(self):
+        settings = replace(LiveSettings(), backend="llamacpp", llamacpp_url="http://127.0.0.1:9")
+        with mock.patch.object(app, "capture", side_effect=RuntimeError("no screen")), \
+             mock.patch.object(app, "desktop_lines", return_value=[("ok", "Window in front", "reads as 'x'")]):
+            lines = app.checks(settings)
+        self.assertIn(("ok", "Window in front", "reads as 'x'"), lines)
 
     def test_llamacpp_backend_checks_the_server(self):
         settings = replace(LiveSettings(), backend="llamacpp", llamacpp_url="http://127.0.0.1:9")

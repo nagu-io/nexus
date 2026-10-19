@@ -18,7 +18,7 @@ from nexus.live.local import LocalVision, card_problem, read_card
 from nexus.live.model import LlamaCppVision, OllamaVision, VisionModel
 from nexus.live.screen import capture
 from nexus.live.settings import LiveSettings
-from nexus.live.voice import HotkeyConfirmer, Recorder, Speaker, Transcriber, hotkey_words
+from nexus.live.voice import HotkeyConfirmer, Recorder, Speaker, Transcriber, hotkey_filter, hotkey_words
 from nexus.live.watch import ScreenWatcher
 
 # Python packages Live needs, and what each is for.
@@ -167,6 +167,7 @@ def checks(settings: LiveSettings) -> list[tuple[str, str, str]]:
             lines.append(("ok", "Screen", f"can see the main monitor ({shot.screen_width}x{shot.screen_height})"))
         except Exception as error:
             lines.append(("error", "Screen", f"cannot take a screenshot: {type(error).__name__}: {error}"))
+    lines.extend(desktop_lines())
     lines.append(
         (
             "ok",
@@ -176,6 +177,45 @@ def checks(settings: LiveSettings) -> list[tuple[str, str, str]]:
             + (f"; only acts in: {', '.join(settings.allowed_windows)}" if settings.allowed_windows else ""),
         )
     )
+    return lines
+
+
+def desktop_lines(
+    front: Callable[[], str | None] | None = None,
+    layout: Callable[[], list | None] | None = None,
+    under: Callable[[tuple[int, int]], str | None] | None = None,
+    held: Callable[[], frozenset[str] | None] | None = None,
+) -> list[tuple[str, str, str]]:
+    """Whether the safety checks can read this desktop: the window in front, the windows on the screen,
+    the window under a point, and the keys held down. What cannot be read makes NEXUS Live more careful."""
+    from nexus.live import executor
+
+    front, layout, under, held = (front or executor.foreground_title, layout or executor.window_layout,
+                                  under or executor.window_at, held or executor.held_modifiers)
+    lines: list[tuple[str, str, str]] = []
+    title = front()
+    if title is None:
+        lines.append(("warn", "Window in front", "cannot be read: NEXUS Live will ask before every step, and teach mode records nothing"))
+    else:
+        lines.append(("ok", "Window in front", f"reads as {title!r}"))
+    windows = layout()
+    if windows is None:
+        lines.append(("warn", "Windows on the screen", "cannot be read: teach mode cannot black out private windows in its screenshots"))
+    else:
+        lines.append(("ok", "Windows on the screen", f"{len(windows)} can be seen"))
+    named = [(name, box) for name, box in windows or [] if name]
+    if named:
+        name, (left, top, right, bottom) = named[0]
+        seen = under(((left + right) // 2, (top + bottom) // 2))
+        if seen is None:
+            lines.append(("warn", "Window under a click", "cannot be told: with confirm=risky, clicks are asked about too"))
+        else:
+            lines.append(("ok", "Window under a click", f"the middle of {name!r} reads as {seen!r}"))
+    keys = held()
+    if keys is None:
+        lines.append(("warn", "Keys held down", "cannot be read: after each yes it waits half a second for your hand to come off the keys"))
+    else:
+        lines.append(("ok", "Keys held down", "can be read" + (f" (now: {'+'.join(sorted(keys))})" if keys else "")))
     return lines
 
 
@@ -205,7 +245,9 @@ class LiveSession:
             self.executor,
             self.speaker,
             self.confirmer,
-            capture=lambda: capture(settings.screen_max_width),
+            # Unoptimized PNGs: the same pixels for the model, made several times faster (each step
+            # takes two screenshots: the one the model sees, and one to check the screen before acting).
+            capture=lambda: capture(settings.screen_max_width, optimize=False),
         )
         self.talk_requested = threading.Event()
         self.recording_stop = threading.Event()
@@ -221,41 +263,50 @@ class LiveSession:
             self.talk_requested.set()
 
     def on_stop(self) -> None:
+        # Also cancels a request still being spoken: listen_loop drops it (see there).
         self.recording_stop.set()
         self.agent.stop()
         self.print("NEXUS: stopped.")
 
+    def note_console(self) -> None:
+        """Remember the window in front as NEXUS Live's own console (it is, while a request is typed there)."""
+        self.agent.note_own_window(self.executor.foreground_title())
+
     def start_hotkeys(self) -> None:
         from pynput import keyboard  # type: ignore
 
-        self._hotkeys = keyboard.GlobalHotKeys(
-            {
-                self.settings.hotkey_talk: self.on_talk,
-                self.settings.hotkey_stop: self.on_stop,
-                self.settings.hotkey_yes: self.confirmer.yes,
-                self.settings.hotkey_no: self.confirmer.no,
-            }
-        )
+        callbacks = {
+            self.settings.hotkey_talk: self.on_talk,
+            self.settings.hotkey_stop: self.on_stop,
+            self.settings.hotkey_yes: self.confirmer.yes,
+            self.settings.hotkey_no: self.confirmer.no,
+        }
+        options: dict[str, Any] = {}
+        if platform.system() == "Windows":
+            # Keep the hotkeys' last key from the window being worked on, where Ctrl+Alt+letter
+            # is a shortcut, or a character on keyboards with AltGr (Ctrl+Alt+Q is @ in German).
+            options["win32_event_filter"] = hotkey_filter(callbacks, lambda: self._hotkeys)
+        self._hotkeys = keyboard.GlobalHotKeys(callbacks, **options)
         self._hotkeys.start()
 
     def start_watching(self) -> None:
         self.watcher = ScreenWatcher(
             self.vision,
             self.speaker,
-            capture=lambda: capture(min(self.settings.screen_max_width, 1024)),
+            capture=lambda: capture(min(self.settings.screen_max_width, 1024), optimize=False),
             interval=self.settings.watch_interval,
             change=self.settings.watch_change,
         )
         threading.Thread(target=self.watcher.run, name="nexus-live-watch", daemon=True).start()
 
-    def handle(self, goal: str) -> Result:
+    def handle(self, goal: str, fresh: bool = True) -> Result:
         if self.watcher:
-            self.watcher.paused.set()
+            self.watcher.pause()  # and wait for a look under way, so the request's screenshot is not old by the time it acts
         try:
-            return self.agent.handle(goal)
+            return self.agent.handle(goal, fresh=fresh)
         finally:
             if self.watcher:
-                self.watcher.paused.clear()
+                self.watcher.resume()
 
     def close(self) -> None:
         if self._hotkeys is not None:
@@ -282,13 +333,20 @@ class LiveSession:
             self.talk_requested.wait()
             self.talk_requested.clear()
             self.recording_stop.clear()
+            self.agent.new_request()  # the stop key, from now on, cancels what is being said
             self.recording.set()
             self.print("(listening... press the talk key again, or stop talking)")
             try:
                 audio = recorder.record(self.recording_stop)
             finally:
                 self.recording.clear()
+            if self.agent.stop_event.is_set():
+                self.print("(dropped what you said)")
+                continue
             text = transcriber.transcribe(audio)
+            if self.agent.stop_event.is_set():
+                self.print("(dropped what you said)")
+                continue
             if not text:
                 self.speaker.say("I didn't catch that.")
                 continue
@@ -296,7 +354,7 @@ class LiveSession:
             if text.strip().lower().rstrip(".!") in {"goodbye", "exit", "quit", "stop listening"}:
                 self.speaker.say("Goodbye.")
                 return
-            self.handle(text)
+            self.handle(text, fresh=False)  # a stop pressed since the talk key still counts
 
     def type_loop(self, read: Callable[[str], str] = input) -> None:
         """Text mode: read requests from the console."""
@@ -308,6 +366,7 @@ class LiveSession:
             if goal.lower() in {"exit", "quit", "q"}:
                 return
             if goal:
+                self.note_console()  # the request was typed here, so this window is NEXUS Live's own
                 self.handle(goal)
 
 

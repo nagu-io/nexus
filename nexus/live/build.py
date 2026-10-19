@@ -12,8 +12,9 @@
 4. With --push, uploads the model to a private repo on your account, so your
    laptop can download it (nexus vision pull) and run it offline.
 
-This is what the Hugging Face Jobs script (scripts/nexus_vision_job.py) and the
-Colab notebook run. It also runs on your own graphics card.
+This is what the Kaggle and Colab notebook (notebooks/train_nexus_vision.ipynb)
+and the Hugging Face Jobs script (tools/nexus_vision_job.py) run. It also runs on
+your own graphics card.
 """
 
 from __future__ import annotations
@@ -93,6 +94,24 @@ an answer NEXUS Live could not act on.
 """
 
 
+class PublicRepo(ValueError):
+    """A repo to upload into exists, and is public."""
+
+
+def ensure_private(api: Any, repo: str, repo_type: str = "model") -> None:
+    """Make ``repo`` on the Hub, private; or check that the one already there is private.
+
+    create_repo leaves an existing repo as it is, public or not: uploads into
+    a public one (a model's raw answers, teach screenshots) would be public.
+    """
+    api.create_repo(repo, repo_type=repo_type, private=True, exist_ok=True)
+    if not getattr(api.repo_info(repo, repo_type=repo_type), "private", False):
+        raise PublicRepo(
+            f"{repo} already exists and is public, so nothing was uploaded to it. Make it private in its settings "
+            "on huggingface.co, or choose another name."
+        )
+
+
 class RunLog:
     """Prints each line, and keeps the run's log in the model repo as run.log.
 
@@ -115,7 +134,7 @@ class RunLog:
         self.clock = clock
         self.lines: list[str] = []
         self.last_upload: float | None = None
-        api.create_repo(repo, private=True, exist_ok=True)  # also proves the token can write, before any work
+        ensure_private(api, repo)  # also proves the token can write, before any work
 
     def print(self, line: str) -> None:
         self.printer(line)
@@ -177,7 +196,7 @@ def environment() -> str:
 def _run(args: argparse.Namespace, printer: Callable[[str], None], log: RunLog | None) -> dict[str, Any]:
     from nexus.live.atlas import fetch_os_atlas
     from nexus.live.evaluate import evaluate, held_out, report_table
-    from nexus.live.finetune import TrainOptions, load_items, train
+    from nexus.live.finetune import TrainOptions, free_memory, load_items, train
     from nexus.live.local import LocalVision
 
     printer(environment())
@@ -229,6 +248,7 @@ def _run(args: argparse.Namespace, printer: Callable[[str], None], log: RunLog |
         held = held_out(items, options.eval_fraction)
         printer(f"Testing on {min(len(held), args.eval_limit)} held-out examples.")
         for name, model in (("NEXUS Vision", LocalVision(out)), ("Base model", LocalVision(args.base, check_card=False))):
+            free_memory()  # nothing from training or the model before may stay on the graphics card
             printer(f"{name}:")
             summary, grades = evaluate(model, held, args.eval_limit, printer)
             results[name] = summary

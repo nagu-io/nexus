@@ -10,6 +10,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from live_tiny_vision import build_tiny_qwen3_vl, vision_stack_available
 
@@ -111,9 +112,13 @@ class VisionTrainingTests(unittest.TestCase):
         vision = LocalVision(out)
         reply = vision.ask('Click "Blue"', [], [], (self.data / "images" / "s0.png").read_bytes(), "normalized")
         self.assertIsInstance(reply, str)
+        # What was generated is kept with the special tokens left in, so "nothing but <|im_end|>" shows.
+        self.assertGreaterEqual(vision.last_generation["new_tokens"], 1)
+        self.assertIsInstance(vision.last_generation["raw"], str)
         items, _ = load_items([self.data])
         summary, grades = evaluate(vision, held_out(items, 0.3), limit=2, printer=lambda line: None)
         self.assertEqual(summary["examples"], 2)
+        self.assertTrue(all(grade.tokens is not None and grade.tokens >= 1 for grade in grades))
 
         # Watch mode asks the base model (the adapter switched off); requests use NEXUS Vision.
         from nexus.live.screen import Shot
@@ -172,6 +177,67 @@ class VisionTrainingTests(unittest.TestCase):
         self.assertEqual(len(items), len(lines))
         self.assertEqual(skipped, {"old prompt version": 1, "invalid": 1, "image missing": 1})
 
+    def test_a_loss_that_becomes_nan_stops_the_run(self):
+        # Trainer used to log the running average in place of a NaN loss, so an overflowed run
+        # "finished normally" with loss 0.0 and its adapter was written and uploaded.
+        import functools
+
+        from transformers import Qwen3VLForConditionalGeneration
+
+        from nexus.live.finetune import TrainingDataError, train
+
+        original = Qwen3VLForConditionalGeneration.forward
+
+        @functools.wraps(original)
+        def overflowing(model, *args, **kwargs):
+            output = original(model, *args, **kwargs)
+            if output.loss is not None:
+                output.loss = output.loss * float("nan")  # what an overflow in float16 gives
+            return output
+
+        out = self.root / "overflowed"
+        with mock.patch.object(Qwen3VLForConditionalGeneration, "forward", overflowing):
+            with self.assertRaisesRegex(TrainingDataError, "became NaN"):
+                train(self.options(out, max_steps=4, log_steps=2), printer=lambda line: None)
+        self.assertFalse((out / "adapter_model.safetensors").exists())
+
+    def test_a_held_out_loss_that_is_nan_stops_the_run_too(self):
+        from transformers import Trainer
+
+        from nexus.live.finetune import TrainingDataError, train
+
+        out = self.root / "nan-held-out"
+        with mock.patch.object(Trainer, "evaluate", return_value={"eval_loss": float("nan")}):
+            with self.assertRaisesRegex(TrainingDataError, "became NaN"):
+                train(self.options(out, max_steps=1), printer=lambda line: None)
+        self.assertFalse((out / "adapter_model.safetensors").exists())
+
+    def test_the_trained_model_is_freed_when_train_returns(self):
+        # Mixed precision (every graphics card run) leaves the model in a reference cycle: without a
+        # collection it stayed in memory while NEXUS Vision was evaluated next to it.
+        import gc
+        import weakref
+
+        from nexus.live import finetune
+
+        alive = []
+        real_add_adapter = finetune.add_adapter
+
+        def spy(model, options, precision):
+            tuned = real_add_adapter(model, options, precision)
+            alive.append(weakref.ref(tuned))
+            return tuned
+
+        mixed = finetune.Precision("cpu", "bfloat16", False)
+        gc.disable()  # so the result does not depend on when Python happens to collect
+        try:
+            with mock.patch.object(finetune, "add_adapter", spy), \
+                 mock.patch.object(finetune, "pick_precision", return_value=mixed):
+                finetune.train(self.options(self.root / "freed", max_steps=1), printer=lambda line: None)
+            self.assertIsNone(alive[0]())
+        finally:
+            gc.enable()
+
     def test_no_data_is_a_clear_error(self):
         from nexus.live.finetune import TrainingDataError, train
 
@@ -190,7 +256,14 @@ class VisionTrainingTests(unittest.TestCase):
              "--workers", "0", "--eval-limit", "2", "--push", ""]
         )
         lines = []
-        report = run(args, printer=lines.append)
+        freed = []
+        from nexus.live import finetune
+
+        real_free = finetune.free_memory
+        with mock.patch.object(finetune, "free_memory", side_effect=lambda: (freed.append(len(lines)), real_free())):
+            report = run(args, printer=lines.append)
+        # Once after training, and before each model is evaluated: nothing earlier stays on the graphics card.
+        self.assertEqual(len(freed), 3)
         self.assertEqual(sorted(report["results"]), ["Base model", "NEXUS Vision"])
         readme = (out / "README.md").read_text()
         self.assertIn("base_model: Qwen/Qwen3-VL-2B-Instruct", readme)

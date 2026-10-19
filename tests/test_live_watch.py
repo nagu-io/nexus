@@ -2,6 +2,7 @@
 
 import importlib.util
 import io
+import threading
 import unittest
 
 from nexus.live.model import ModelUnavailable
@@ -127,11 +128,12 @@ class LookOnceTests(unittest.TestCase):
         self.assertEqual([watch.look_once() for _ in range(4)], ["Low battery.", "", "", ""])
         self.assertEqual(speaker.said, ["Low battery."])
 
-    def test_unavailable_model_is_silent_and_watching_goes_on(self):
-        observer = FakeObserver(ModelUnavailable("Ollama is not running"), "The upload finished.")
-        watch, speaker, _ = watcher(observer, Differences(1.0, 1.0), [b"A", b"B"])
-        self.assertEqual(watch.look_once(), "")
-        self.assertEqual(speaker.said, [])
+    def test_unavailable_model_is_said_once_and_watching_goes_on(self):
+        down = ModelUnavailable("Ollama is not running")
+        observer = FakeObserver(down, down, "The upload finished.")
+        watch, speaker, _ = watcher(observer, Differences(1.0, 1.0, 1.0), [b"A", b"B", b"C"])
+        self.assertEqual([watch.look_once(), watch.look_once()], ["", ""])
+        self.assertEqual(speaker.said, ["Watch mode couldn't look at the screen (Ollama is not running). I'll keep trying."])
         self.assertEqual(watch.look_once(), "The upload finished.")
 
 
@@ -187,6 +189,63 @@ class RunTests(unittest.TestCase):
         watch.stop()
         watch.run()  # returns at once: the real event is already set, so the 7.5 s wait does not happen
         self.assertEqual(screens.count, 0)
+
+    def test_a_failed_look_never_ends_watching(self):
+        # Out of memory on the graphics card, say: watch mode says so once and keeps looking.
+        observer = FakeObserver(RuntimeError("CUDA out of memory"), RuntimeError("CUDA out of memory"), "A new message.")
+        watch, speaker, screens = watcher(observer, Differences(1.0, 1.0, 1.0), [b"A", b"B", b"C"], interval=7.5)
+        watch._stop = ScriptedStop((False, None), (False, None), (False, None), (True, None))
+        watch.run()
+        self.assertEqual(screens.count, 3)
+        self.assertEqual(
+            speaker.said,
+            ["Watch mode couldn't look at the screen (RuntimeError: CUDA out of memory). I'll keep trying.", "A new message."],
+        )
+
+    def test_a_new_problem_is_said_too(self):
+        observer = FakeObserver(RuntimeError("one"), ValueError("two"))
+        watch, speaker, _ = watcher(observer, Differences(1.0, 1.0), [b"A", b"B"])
+        watch._stop = ScriptedStop((False, None), (False, None), (True, None))
+        watch.run()
+        self.assertEqual(len(speaker.said), 2)
+
+
+class PauseTests(unittest.TestCase):
+    def test_pause_waits_for_a_look_under_way(self):
+        # A request must not take its screenshot while a look still holds the model.
+        started, release = threading.Event(), threading.Event()
+        order = []
+
+        class SlowObserver:
+            def observe(self, screenshot):
+                started.set()
+                release.wait(5)
+                order.append("look finished")
+                return ""
+
+        watch = ScreenWatcher(SlowObserver(), FakeSpeaker(), Screens(b"A"), interval=0.0, difference=lambda before, after: 1.0)
+        watch._stop = ScriptedStop((False, None), (True, None))
+        looker = threading.Thread(target=watch.run)
+        looker.start()
+        self.assertTrue(started.wait(5))
+        pauser = threading.Thread(target=lambda: (watch.pause(), order.append("paused")))
+        pauser.start()
+        pauser.join(0.2)
+        self.assertTrue(pauser.is_alive(), "pause() returned while a look was still under way")
+        release.set()
+        pauser.join(5)
+        looker.join(5)
+        self.assertEqual(order, ["look finished", "paused"])
+        self.assertTrue(watch.paused.is_set())
+        watch.resume()
+        self.assertFalse(watch.paused.is_set())
+
+    def test_no_look_starts_while_paused(self):
+        watch, _, screens = RunTests().make(2)
+        watch.pause()
+        watch._stop = ScriptedStop((False, None), (False, watch.resume), (True, None))
+        watch.run()
+        self.assertEqual(screens.count, 1)  # the first wait ended paused; after resume() the second looked
 
 
 @unittest.skipUnless(HAS_PILLOW, "needs Pillow")

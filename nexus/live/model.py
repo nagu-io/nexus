@@ -124,6 +124,21 @@ class Decision:
             return f"wait {self.seconds:g} s"
         return self.action
 
+    def confirmation(self) -> str:
+        """The step as the user is asked to approve it: facts only, never the model's own words about it.
+
+        Typing shows the whole text, whatever its length: what is approved is
+        exactly what is typed. (The model's thought stays out: text on the screen
+        can steer it, and it would then be the one describing its step as safe.)
+        """
+        if self.action in POINTER_ACTIONS:
+            return f"{self.action.replace('_', ' ')} at ({self.x:g}, {self.y:g})"
+        if self.action == "type":
+            return f"type {self.text!r} ({len(self.text)} characters)"
+        if self.action == "scroll" and self.x is not None:
+            return f"{self.describe()} at ({self.x:g}, {self.y:g})"
+        return self.describe()
+
 
 def _number(value: Any, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
@@ -150,9 +165,13 @@ def _text(value: Any, name: str, limit: int) -> str:
 
 
 def _control(character: str) -> bool:
-    """A control character that must never be typed: C0 (but newline and tab), DEL, and C1 (0x80 to 0x9f, CSI among them)."""
+    """A character that must never be typed: C0 controls (newline and tab among them), DEL, and C1 (0x80 to 0x9f, CSI among them).
+
+    A newline would press Enter and a tab would move the focus in the middle of
+    an approved piece of typing; they are steps of their own (press enter, press tab).
+    """
     code = ord(character)
-    return (code < 32 and character not in "\n\t") or 0x7F <= code <= 0x9F
+    return code < 32 or 0x7F <= code <= 0x9F
 
 
 def _key(value: Any) -> str:
@@ -225,7 +244,10 @@ def parse_decision(raw: str | dict[str, Any]) -> Decision:
         if len(text) > MAX_TEXT:
             raise DecisionError(f"the text to type is longer than {MAX_TEXT} characters")
         if any(_control(character) for character in text):
-            raise DecisionError("the text to type has control characters in it")
+            raise DecisionError(
+                "the text to type has a line break, tab or control character in it: "
+                "type one line, and press enter or tab as a step of its own"
+            )
         return Decision(action, say, thought, text=text)
     if action == "press":
         keys = _keys(data)
@@ -262,7 +284,7 @@ def _too_many_keys():
 
 # Bumped whenever the prompts or the answer format change: a model fine-tuned on
 # one version is told apart from the prompts of another (see nexus.live.local).
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2
 
 
 def chat_messages(system: str, text: str, image: Any) -> list[dict[str, Any]]:
@@ -297,7 +319,8 @@ def system_prompt(mode: str) -> str:
         f"Positions: {_coordinate_rule(mode)} Point at the middle of what you mean.\n"
         "Actions:\n"
         "- click, double_click, right_click: with x and y.\n"
-        "- type: text into the field that has focus (click the field first).\n"
+        "- type: one line of text into the field that has focus (click the field first). "
+        "Enter and tab are steps of their own.\n"
         '- press: one key in keys, such as ["enter"], ["tab"], ["esc"].\n'
         '- hotkey: keys pressed together, such as ["ctrl", "s"].\n'
         "- scroll: amount, positive scrolls up and negative scrolls down; x and y to scroll a part of the screen.\n"
@@ -346,14 +369,28 @@ OBSERVE_SCHEMA: dict[str, Any] = {
 }
 
 
+# Text that reads like one of the model's own control tokens (<|im_start|>, <|im_end|>, <|vision_start|>...).
+SPECIAL_TOKEN_TEXT = re.compile(r"<\|[^<>|\s]{1,40}\|>")
+
+
+def clean(text: str) -> str:
+    """``text`` without anything the tokenizer would read as a control token.
+
+    Requests, earlier steps and what was said all go into the prompt as plain
+    text; a "<|im_start|>" in them (copied from the screen into a thought, say)
+    would otherwise become a real chat-turn marker and forge a turn.
+    """
+    return SPECIAL_TOKEN_TEXT.sub("", text)
+
+
 def request_text(goal: str, steps: list[str], conversation: list[tuple[str, str]]) -> str:
-    lines = [f"Request: {goal.strip()}"]
+    lines = [f"Request: {clean(goal).strip()}"]
     if conversation:
         lines.append("Earlier in this conversation:")
-        lines.extend(f"- {who}: {what}" for who, what in conversation)
+        lines.extend(f"- {who}: {clean(what)}" for who, what in conversation)
     if steps:
         lines.append("Steps already taken for this request:")
-        lines.extend(f"{number}. {step}" for number, step in enumerate(steps, start=1))
+        lines.extend(f"{number}. {clean(step)}" for number, step in enumerate(steps, start=1))
     lines.append("What is the next step?")
     return "\n".join(lines)
 
