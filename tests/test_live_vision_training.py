@@ -195,11 +195,15 @@ class VisionTrainingTests(unittest.TestCase):
                 output.loss = output.loss * float("nan")  # what an overflow in float16 gives
             return output
 
-        out = self.root / "overflowed"
-        with mock.patch.object(Qwen3VLForConditionalGeneration, "forward", overflowing):
-            with self.assertRaisesRegex(TrainingDataError, "became NaN"):
-                train(self.options(out, max_steps=4, log_steps=2), printer=lambda line: None)
-        self.assertFalse((out / "adapter_model.safetensors").exists())
+        for eval_fraction in (0.3, 0.0):  # with no held-out examples, the training loss alone has to catch it
+            with self.subTest(eval_fraction=eval_fraction):
+                out = self.root / f"overflowed-{eval_fraction}"
+                logged = []
+                with mock.patch.object(Qwen3VLForConditionalGeneration, "forward", overflowing):
+                    with self.assertRaisesRegex(TrainingDataError, "became NaN"):
+                        train(self.options(out, max_steps=4, log_steps=2, eval_fraction=eval_fraction), printer=logged.append)
+                self.assertFalse((out / "adapter_model.safetensors").exists())
+                self.assertIn("step 1 of 4: loss nan", logged)  # the loss as it is, not a running average of 0.0
 
     def test_a_held_out_loss_that_is_nan_stops_the_run_too(self):
         from transformers import Trainer
