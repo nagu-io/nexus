@@ -8,6 +8,10 @@ so there is no per-token cost and your screen stays on your machine.
 
 ## Set it up (Windows)
 
+Install the CUDA build of PyTorch first, from https://pytorch.org/get-started/locally/
+(pip's own torch on Windows has no CUDA, and NEXUS Vision would run on the processor,
+slowly). Then:
+
 ```
 pip install -e .[live,vision]
 nexus vision pull YOUR_NAME/nexus-vision

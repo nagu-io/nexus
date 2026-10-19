@@ -39,40 +39,47 @@ A few dozen sessions of the things you actually do makes a real difference.
 
 ## 2. Train it
 
-All three ways run the same thing (`nexus vision build`): fetch the OS-Atlas
+Every way runs the same thing (`nexus vision build`): fetch the OS-Atlas
 screenshots, add your recordings if you give them, fine-tune, test the result
 against the base model on examples it never saw, and upload it to a **private**
 model repo on your Hugging Face account.
 
 You need a Hugging Face account and a token that can write
-(https://huggingface.co/settings/tokens).
+(https://huggingface.co/settings/tokens, New token, type Write).
 
-### a. Hugging Face Jobs (paid, simplest)
+### a. Kaggle (free, recommended)
 
-Jobs bill your Hugging Face account by the minute and need a positive credit
-balance (https://huggingface.co/settings/billing). An A10G costs about $1 an hour;
-a run with the defaults takes about an hour and a half, so expect $1.50 to $3. The
-script stops itself after 3 hours whatever happens.
+Kaggle gives free GPU time every week (your quota is on your Kaggle settings page),
+and a notebook saved with "Save & Run All" keeps running after you close the tab.
 
-```
-hf auth login
-hf jobs uv run tools/nexus_vision_job.py -- --push YOUR_NAME/nexus-vision
-```
+1. On kaggle.com, verify your phone number once (Settings). It unlocks GPUs and
+   internet access in notebooks.
+2. Create > New Notebook, then File > Import Notebook, and import
+   `notebooks/train_nexus_vision.ipynb` from this repo (the GitHub link to it).
+3. In the right panel: Accelerator **GPU T4 x2**, Internet **On**.
+4. Add-ons > Secrets: add `HF_TOKEN` with your token, and tick it for this notebook.
+5. In the settings cell, put your user name in `REPO`. Until the NEXUS Live branch
+   is merged, set `REF = "claude/nexus-live"`.
+6. Save Version > **Save & Run All (Commit)** > Save. Close the tab.
 
-To add your recordings, upload them first (they stay private):
+It takes a few hours. The model lands in your Hugging Face repo, and a copy sits in
+the notebook's Output tab in case the upload fails.
 
-```
-nexus vision share-teach YOUR_NAME/nexus-teach
-hf jobs uv run tools/nexus_vision_job.py -- --push YOUR_NAME/nexus-vision --teach YOUR_NAME/nexus-teach
-```
+The free T4 has no bfloat16 in hardware, so training runs in float16. If that
+overflows (the loss turns into NaN), it starts again in float32 by itself: slower,
+but it holds.
 
-### b. Colab or Kaggle (free)
+### b. Colab (free)
 
-Open `notebooks/nexus_vision_colab.ipynb` in Google Colab (or Kaggle), choose a T4
-GPU, set your repo name in the settings cell and run the cells in order. With 2000
-OS-Atlas elements it takes about two hours on a free T4.
+Open `notebooks/train_nexus_vision.ipynb` in Google Colab, Runtime > Change runtime
+type > T4 GPU, add `HF_TOKEN` under the key icon (Secrets), fill in the settings
+cell and Runtime > Run all. Colab stops when you close the tab, so keep it open.
 
-### c. Your own graphics card
+### c. Your own graphics card (free)
+
+On Windows, first install the CUDA build of PyTorch from
+https://pytorch.org/get-started/locally/ (pip's own torch on Windows has no CUDA and
+would train on the processor), then:
 
 ```
 pip install -e .[vision]
@@ -80,11 +87,36 @@ nexus vision build --push YOUR_NAME/nexus-vision
 ```
 
 On a card under 12 GB the base model is loaded in 4 bits. A 4 GB laptop card (an
-RTX 3050) can do it with `--width 960 --batch-size 1 --grad-accum 16 --limit 1500`,
-slowly: plan for an evening. If you train at another width, NEXUS Live reads it
-from the model and shrinks the screen to match.
+RTX 3050) can do it with `--width 768 --batch-size 1 --grad-accum 16 --limit 1500`,
+slowly: leave it overnight. If you train at another width, NEXUS Live reads it from
+the model and shrinks the screen to match.
 
-The steps can also be run one at a time:
+### d. Hugging Face Jobs (paid)
+
+Jobs bill your Hugging Face account by the minute and need a positive credit
+balance (https://huggingface.co/settings/billing). An A10G costs about $1 an hour;
+a run with the defaults takes about an hour and a half. The script stops itself
+after 3 hours whatever happens.
+
+```
+hf auth login
+hf jobs uv run tools/nexus_vision_job.py -- --push YOUR_NAME/nexus-vision
+```
+
+### Your recordings in the cloud
+
+Kaggle, Colab and Jobs train on your teach recordings only if you upload them,
+which makes a private dataset repo:
+
+```
+nexus vision share-teach YOUR_NAME/nexus-teach
+```
+
+Then set `TEACH = "YOUR_NAME/nexus-teach"` in the notebook (or pass
+`--teach YOUR_NAME/nexus-teach`). Look through `~/.nexus/live/teach/images` first if
+anything private was on your screen.
+
+### One step at a time
 
 ```
 nexus vision fetch --system windows --limit 4000 --out data/vision

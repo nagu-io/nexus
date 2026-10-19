@@ -73,7 +73,7 @@ def apply_model_card(settings: LiveSettings) -> LiveSettings:
     return replace(settings, screen_max_width=card.screen_width)
 
 
-def _local_lines(settings: LiveSettings) -> list[tuple[str, str, str]]:
+def _local_lines(settings: LiveSettings, hardware: Any = None) -> list[tuple[str, str, str]]:
     lines: list[tuple[str, str, str]] = []
     folder = Path(settings.model_dir).expanduser()
     problem = card_problem(folder, settings.coordinates)
@@ -91,7 +91,27 @@ def _local_lines(settings: LiveSettings) -> list[tuple[str, str, str]]:
     if missing:
         names = ", ".join(f"{name} ({why})" for name, why in missing)
         lines.append(("error", "Vision packages", f"missing {names}. Run: pip install -e .[vision]"))
+    elif hardware is not None and getattr(hardware, "gpu_name", None) and not _torch_sees_cuda():
+        # On Windows, pip's own torch has no CUDA: NEXUS Vision would then run on the processor.
+        lines.append(
+            (
+                "warn",
+                "Graphics card",
+                f"{hardware.gpu_name} is here, but this torch was built without CUDA, so NEXUS Vision would run on the "
+                "processor, slowly. Install the CUDA build of torch from https://pytorch.org/get-started/locally/ "
+                "(your system, pip, CUDA).",
+            )
+        )
     return lines
+
+
+def _torch_sees_cuda() -> bool:
+    try:
+        import torch  # type: ignore
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
 
 
 def _llamacpp_lines(settings: LiveSettings) -> list[tuple[str, str, str]]:
@@ -125,7 +145,7 @@ def checks(settings: LiveSettings) -> list[tuple[str, str, str]]:
     model, why = resolve_model(settings)
     lines.append(("ok", "Vision model", f"{model} ({why})"))
     if settings.backend == "local":
-        lines.extend(_local_lines(settings))
+        lines.extend(_local_lines(settings, hardware))
     elif settings.backend == "llamacpp":
         lines.extend(_llamacpp_lines(settings))
     else:

@@ -91,6 +91,16 @@ def _want_4bit(setting: str) -> bool:
         return False
 
 
+def _compute_dtype(torch: Any) -> Any:
+    """bfloat16 on graphics cards that do it in hardware (an RTX 30 series and later), else float16.
+
+    Qwen3-VL ships in bfloat16; float16 can overflow, so it is only the fallback for older cards.
+    """
+    if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8:
+        return torch.bfloat16
+    return torch.float16
+
+
 class LocalVision(VisionModel):
     """A vision model loaded in this process. ``model_dir`` is a NEXUS Vision folder (checked against its
     model card), or, with ``check_card=False``, any Qwen3-VL folder or Hub name, such as the base model."""
@@ -133,7 +143,7 @@ class LocalVision(VisionModel):
             from transformers import BitsAndBytesConfig  # type: ignore
 
             options["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.float16
+                load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=_compute_dtype(torch)
             )
             options["device_map"] = {"": 0}
             options.pop("dtype")

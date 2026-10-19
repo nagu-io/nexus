@@ -21,6 +21,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
+import traceback
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -91,7 +93,65 @@ an answer NEXUS Live could not act on.
 """
 
 
+class RunLog:
+    """Prints each line, and keeps the run's log in the model repo as run.log.
+
+    A run on Kaggle or Colab can then be followed (and a failure read) from
+    anywhere with access to the repo, without the notebook open. The log is
+    uploaded every ``every`` seconds and at each stage; an upload that fails is
+    reported and the run goes on.
+    """
+
+    def __init__(self, repo: str, printer: Callable[[str], None] = print, every: float = 600.0,
+                 api: Any = None, clock: Callable[[], float] = time.monotonic):
+        if api is None:
+            from huggingface_hub import HfApi  # type: ignore
+
+            api = HfApi()
+        self.repo = repo
+        self.printer = printer
+        self.every = every
+        self.api = api
+        self.clock = clock
+        self.lines: list[str] = []
+        self.last_upload: float | None = None
+        api.create_repo(repo, private=True, exist_ok=True)  # also proves the token can write, before any work
+
+    def print(self, line: str) -> None:
+        self.printer(line)
+        self.lines.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}")
+        if self.last_upload is None or self.clock() - self.last_upload >= self.every:
+            self.upload()
+
+    def upload(self) -> None:
+        self.last_upload = self.clock()
+        try:
+            self.api.upload_file(
+                path_or_fileobj=("\n".join(self.lines) + "\n").encode("utf-8"),
+                path_in_repo="run.log",
+                repo_id=self.repo,
+                commit_message="Training log",
+            )
+        except Exception as error:  # the log is a convenience: never let it stop the run
+            self.printer(f"(could not update run.log: {type(error).__name__})")
+
+    def failed(self, error: BaseException) -> None:
+        self.lines.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')} FAILED: {type(error).__name__}: {error}")
+        self.lines.extend(traceback.format_exception(error)[-12:])
+        self.upload()
+
+
 def run(args: argparse.Namespace, printer: Callable[[str], None] = print) -> dict[str, Any]:
+    log = RunLog(args.push, printer) if args.push else None
+    try:
+        return _run(args, log.print if log else printer, log)
+    except BaseException as error:
+        if log:
+            log.failed(error)
+        raise
+
+
+def _run(args: argparse.Namespace, printer: Callable[[str], None], log: RunLog | None) -> dict[str, Any]:
     from nexus.live.atlas import fetch_os_atlas
     from nexus.live.evaluate import evaluate, held_out, report_table
     from nexus.live.finetune import TrainOptions, load_items, train
@@ -112,6 +172,8 @@ def run(args: argparse.Namespace, printer: Callable[[str], None] = print) -> dic
     data += [fetch_teach(source, work, printer) for source in args.teach or []]
     if not data:
         raise SystemExit("No data: give --limit above 0 for OS-Atlas examples, or --teach with your recordings.")
+    if log:
+        log.upload()
 
     out = Path(args.out).expanduser()
     options = TrainOptions(
@@ -126,12 +188,15 @@ def run(args: argparse.Namespace, printer: Callable[[str], None] = print) -> dic
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_rank * 2,
         four_bit=args.four_bit,
+        compute=args.compute,
         max_width=args.width,
         seed=args.seed,
         workers=args.workers,
     )
     result = train(options, printer)
     training = json.loads((out / "training.json").read_text(encoding="utf-8"))
+    if log:
+        log.upload()
 
     results: dict[str, dict[str, Any]] = {}
     if args.eval_limit > 0:
@@ -148,11 +213,8 @@ def run(args: argparse.Namespace, printer: Callable[[str], None] = print) -> dic
     (out / "README.md").write_text(model_readme(args.push or "", training, results, table), encoding="utf-8")
     printer(table)
 
-    if args.push:
-        from huggingface_hub import HfApi  # type: ignore
-
-        api = HfApi()
-        api.create_repo(args.push, private=True, exist_ok=True)
+    if log:
+        api = log.api
         api.upload_folder(
             folder_path=str(out),
             repo_id=args.push,
@@ -160,6 +222,7 @@ def run(args: argparse.Namespace, printer: Callable[[str], None] = print) -> dic
             commit_message=f"NEXUS Vision: {result.train_examples} examples, {result.steps} steps",
         )
         printer(f"Uploaded to https://huggingface.co/{args.push} (private).")
+        log.upload()
     return {"training": asdict(result) | {"out": str(out)}, "results": results}
 
 
@@ -181,6 +244,7 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument("--four-bit", choices=("auto", "on", "off"), default="auto")
+    parser.add_argument("--compute", choices=("auto", "bf16", "fp16", "fp32"), default="auto")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--workers", type=int, default=0 if os.name == "nt" else 2)
@@ -190,6 +254,9 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from nexus.live.finetune import use_one_gpu
+
+    use_one_gpu()
     run(parser().parse_args(argv))
     return 0
 
