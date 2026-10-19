@@ -71,7 +71,7 @@ The LoRA adapter weights are hosted separately to keep the repo lightweight:
 python tools/download_model.py
 ```
 
-Or manually download from [HuggingFace Hub](https://huggingface.co/) and place files in `lora_model/`.
+Or download them by hand from [Nagu404/nexus-lora-v1](https://huggingface.co/Nagu404/nexus-lora-v1) on the Hugging Face Hub and put them in `lora_model/`.
 
 ### Run the Web Stack
 
