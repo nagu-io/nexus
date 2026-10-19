@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-REPO_ID = "nagu-io/nexus-lora-v1"
+REPO_ID = "Nagu404/nexus-lora-v1"
 LOCAL_DIR = Path(__file__).resolve().parents[1] / "lora_model"
 
 FILES_TO_UPLOAD = [

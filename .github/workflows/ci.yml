@@ -19,7 +19,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python dependencies
-        run: pip install -e .
+        # pytest is not a dependency of the package, so it has to be installed for the tests to run at all
+        # (pyproject's pytest settings are pytest-asyncio's).
+        run: pip install -e . pytest pytest-asyncio
 
       - name: Run backend tests
         run: python -m pytest tests/ -v --tb=short
