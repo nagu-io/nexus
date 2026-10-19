@@ -163,6 +163,23 @@ Read the architecture note in [`docs/NEXUS_HIVE.md`](docs/NEXUS_HIVE.md).
 
 > **Honest status:** Hive is real in the repo, but the internet-wide peer transport is still experimental, not a finished public mesh.
 
+## NEXUS Live
+
+NEXUS Live sees your screen, listens, talks back, and uses the mouse and keyboard
+for you, all on your own computer. Its eyes are NEXUS Vision, a vision model you
+fine-tune yourself (a LoRA on Qwen3-VL-2B-Instruct) on Windows screenshots and your
+own demonstrations. It asks before every step by default and never acts in password,
+banking or terminal windows.
+
+```bash
+pip install -e .[live,vision]
+nexus vision pull YOUR_NAME/nexus-vision   # after training it: docs/NEXUS_VISION.md
+nexus live --check
+nexus live --voice
+```
+
+See [`docs/NEXUS_LIVE.md`](docs/NEXUS_LIVE.md) and [`docs/NEXUS_VISION.md`](docs/NEXUS_VISION.md).
+
 ## Workflow
 
 1. Launch the dashboard or desktop app
@@ -181,6 +198,9 @@ nexus chat
 nexus reflect
 nexus protect --status
 nexus hive "build me a full authentication system"
+nexus live --voice
+nexus live --teach
+nexus vision build --push YOUR_NAME/nexus-vision
 
 # Direct execution
 python main.py --build --explain "create react login page"

@@ -352,6 +352,190 @@ def chat(voice, dashboard):
 
 
 @cli.command()
+@click.option("--voice", is_flag=True, help="Talk to it: press the talk hotkey, speak, and hear the answer")
+@click.option("--watch", is_flag=True, help="Also watch the screen and speak up when something needs you (it never acts on its own)")
+@click.option("--goal", default=None, help="Do one request and exit")
+@click.option("--dry-run", is_flag=True, help="Say what it would do without clicking or typing anything")
+@click.option(
+    "--backend",
+    type=click.Choice(["local", "llamacpp", "ollama"]),
+    default=None,
+    help="local: your NEXUS Vision in this process (the default). llamacpp: a GGUF in llama-server. ollama: a model in Ollama",
+)
+@click.option("--model", default=None, help="Ollama vision model (implies --backend ollama); by default one is picked for this computer")
+@click.option(
+    "--confirm",
+    type=click.Choice(["all", "risky"]),
+    default=None,
+    help="all: ask before every action (the default). risky: ask before typing and keys only",
+)
+@click.option("--teach", is_flag=True, help="Teach mode: do tasks yourself and save each step as training data for NEXUS Vision")
+@click.option("--teach-dir", default=None, help="Where teach mode saves its examples (default ~/.nexus/live/teach)")
+@click.option("--check", "check_only", is_flag=True, help="Check this computer, the vision model and the packages Live needs, then exit")
+def live(voice, watch, goal, dry_run, backend, model, confirm, teach, teach_dir, check_only):
+    """NEXUS Live: sees your screen, listens, talks, and uses the mouse and keyboard, all on this computer."""
+    try:
+        from nexus.live.app import LiveSession, checks, resolve_model, session_settings
+        from nexus.live.settings import LiveSettings
+
+        settings = session_settings(LiveSettings.from_env(), dry_run=dry_run, model=model, confirm=confirm, backend=backend)
+        if check_only:
+            styles = {"ok": ("[OK]", "green"), "warn": ("[WARN]", "yellow"), "error": ("[ERR]", "red")}
+            for level, name, message in checks(settings):
+                label, color = styles[level]
+                console.print(f"[{color}]{label} {name}[/{color}] - ", end="")
+                console.print(message, markup=False)
+            return
+        if teach:
+            from nexus.live.teach import run_teach
+
+            run_teach(settings, teach_dir, printer=lambda line: console.print(line, markup=False))
+            return
+
+        model_name, why = resolve_model(settings)
+        session = LiveSession(settings, model_name, printer=lambda line: console.print(line, markup=False))
+        console.print(
+            Panel(
+                f"Model: {model_name} ({why})\n"
+                f"Keys: {session.keys_help()}\n"
+                + ("Dry run: nothing will be clicked or typed.\n" if settings.dry_run else "")
+                + "Throw the mouse into a screen corner to stop an action mid-way.",
+                title="[bold cyan]NEXUS Live[/bold cyan]",
+                style="cyan",
+            )
+        )
+        session.start_hotkeys()
+        if watch:
+            session.start_watching()
+        try:
+            if goal:
+                result = session.handle(goal)
+                console.print(f"[dim]Outcome: {result.outcome}[/dim]")
+            elif voice:
+                session.listen_loop()
+            else:
+                console.print("[dim]Type a request (or exit).[/dim]")
+                session.type_loop()
+        finally:
+            session.close()
+    except Exception as error:
+        _print_command_error("nexus live", error, "Run `nexus live --check` to see what is missing.")
+
+
+@cli.group()
+def vision():
+    """NEXUS Vision, your own model for NEXUS Live: fetch data, train, evaluate, download."""
+
+
+_PASSTHROUGH = {"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []}
+
+
+@vision.command("fetch", context_settings=_PASSTHROUGH)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def vision_fetch(args):
+    """Fetch OS-Atlas screenshots for training (--system windows --limit 4000 --out FOLDER; --help for all)."""
+    from nexus.live.atlas import main
+
+    raise SystemExit(main(list(args)))
+
+
+@vision.command("train", context_settings=_PASSTHROUGH)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def vision_train(args):
+    """Fine-tune NEXUS Vision on dataset folders (--data FOLDER --out FOLDER; --help for all)."""
+    from nexus.live.finetune import main
+
+    raise SystemExit(main(list(args)))
+
+
+@vision.command("eval", context_settings=_PASSTHROUGH)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def vision_eval(args):
+    """Test NEXUS Vision on held-out examples, against another model if you like (--help for all)."""
+    from nexus.live.evaluate import main
+
+    raise SystemExit(main(list(args)))
+
+
+@vision.command("build", context_settings=_PASSTHROUGH)
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def vision_build(args):
+    """Fetch, train, evaluate and upload in one go, on this computer's graphics card (--help for all)."""
+    from nexus.live.build import main
+
+    raise SystemExit(main(list(args)))
+
+
+@vision.command("merge")
+@click.argument("adapter")
+@click.argument("out")
+def vision_merge(adapter, out):
+    """Fold a NEXUS Vision adapter into its base model: one standalone folder, for GGUF or offline use."""
+    try:
+        from nexus.live.finetune import merge
+
+        merge(Path(adapter), Path(out), printer=lambda line: console.print(line, markup=False))
+    except Exception as error:
+        _print_command_error("nexus vision merge", error, "It needs the vision extra: pip install -e .[vision]")
+
+
+@vision.command("pull")
+@click.argument("repo")
+@click.option("--to", "target", default=None, help="Folder to put it in (default: NEXUS_LIVE_MODEL_DIR, ~/.nexus/live/nexus_vision)")
+def vision_pull(repo, target):
+    """Download your NEXUS Vision from your Hugging Face account, for the local backend."""
+    try:
+        from huggingface_hub import snapshot_download
+
+        from nexus.live.local import card_problem
+        from nexus.live.settings import LiveSettings
+
+        settings = LiveSettings.from_env()
+        folder = Path(target or settings.model_dir).expanduser()
+        console.print(f"Downloading {repo} into {folder}...")
+        snapshot_download(repo, local_dir=str(folder), ignore_patterns=["checkpoints/*"])
+        problem = card_problem(folder, settings.coordinates)
+        if problem:
+            console.print(f"[yellow]Downloaded, but: {problem}[/yellow]")
+        else:
+            console.print("[green]Ready.[/green] Run `nexus live --check`, then `nexus live --voice`.")
+    except Exception as error:
+        _print_command_error(
+            "nexus vision pull", error, "A private repo needs you logged in on this computer: run `hf auth login` first."
+        )
+
+
+@vision.command("share-teach")
+@click.argument("repo")
+@click.option("--from", "source", default=None, help="Your teach folder (default ~/.nexus/live/teach)")
+def vision_share_teach(repo, source):
+    """Upload your teach recordings to a PRIVATE dataset repo, for training in the cloud."""
+    try:
+        from huggingface_hub import HfApi
+
+        from nexus.live.data import EXAMPLES_FILE
+        from nexus.live.teach import default_folder
+
+        folder = Path(source or default_folder()).expanduser()
+        if not (folder / EXAMPLES_FILE).exists():
+            raise click.ClickException(f"No recordings in {folder}. Record some with `nexus live --teach` first.")
+        console.print(
+            f"This uploads every screenshot in {folder} to {repo}, kept private. "
+            "Look through the images folder first if anything private was on your screen."
+        )
+        if not click.confirm("Upload?", default=False):
+            return
+        api = HfApi()
+        api.create_repo(repo, repo_type="dataset", private=True, exist_ok=True)
+        api.upload_folder(folder_path=str(folder), repo_id=repo, repo_type="dataset", commit_message="NEXUS Live teach recordings")
+        console.print(f"[green]Uploaded.[/green] Train with: --teach {repo}")
+    except click.ClickException:
+        raise
+    except Exception as error:
+        _print_command_error("nexus vision share-teach", error, "Log in first with `hf auth login`.")
+
+
+@cli.command()
 @click.option("--live", is_flag=True, help="Score responses in real time")
 @click.option("--compare", default=None, metavar="REFERENCE", help="Compare current model against a saved reference label (e.g. original)")
 @click.option("--report", is_flag=True, help="Export benchmark report as JSON")
