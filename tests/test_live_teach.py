@@ -465,7 +465,7 @@ class StuckKeyTests(unittest.TestCase):
         h.recorder.on_press("win")
         h.clock.tick(5.0)
         h.recorder.on_press("a", "a")
-        self.assertEqual(h.steps(), [])
+        self.assertEqual(h.recorder.stop().steps, [])  # stop() writes down typing still pending
 
 
 class PrivacyTests(unittest.TestCase):

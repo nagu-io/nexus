@@ -147,5 +147,6 @@ computer's memory (`nexus live --check` says which).
 - Drags and drawing are not among its steps; teach mode records the press as a click.
 - A 2B model on a laptop takes a few seconds per step, more on a CPU.
 - On a Mac it cannot tell which window is under a click, so with `risky` it asks
-  about clicks too.
+  about clicks too. It reads the window in front through AppleScript, which takes a
+  moment each time, and typing reads it before every letter, so typing is slow there.
 - On Linux, pyautogui needs tkinter (`sudo apt install python3-tk`).
