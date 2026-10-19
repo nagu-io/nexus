@@ -408,8 +408,9 @@ class PrivacyTests(unittest.TestCase):
         self.assertEqual(h.steps(), [])
 
     def test_nothing_is_recorded_in_its_own_console(self):
-        h = Harness(title="MINGW64:/c/Users/nagu")
-        h.recorder.own_titles.add("MINGW64:/c/Users/nagu")
+        # VS Code's own terminal: not on the blocked list, but teach mode was started from it.
+        h = Harness(title="nexus - Visual Studio Code")
+        h.recorder.own_titles.add("nexus - Visual Studio Code")
         h.recorder.start("x")
         h.snap("s")
         h.recorder.on_press("a", "a")
@@ -463,11 +464,12 @@ class PrivacyTests(unittest.TestCase):
             layout_reader=lambda: layout, cover=lambda frame, windows, hidden: covered.append(
                 (frame.image, windows, [hidden(title) for title, _ in windows])),
         )
-        recorder.own_titles.add("Windows PowerShell")
+        recorder.own_titles.add("nexus - Visual Studio Code")
         recorder.start("x")
         recorder.snap()
         self.assertEqual(covered, [(b"s", layout, [False, True])])
-        self.assertTrue(recorder.hidden("Windows PowerShell"))
+        self.assertTrue(recorder.hidden("nexus - Visual Studio Code"))  # its own console, though not a blocked one
+        self.assertFalse(recorder.hidden("other - Visual Studio Code"))
         self.assertTrue(recorder.hidden("Search"))
         self.assertFalse(recorder.hidden(None))
         self.assertFalse(recorder.hidden(""))
