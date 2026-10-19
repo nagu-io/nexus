@@ -24,6 +24,7 @@ from nexus.live.teach import (
     TeachSession,
     WheelNotches,
     describe,
+    desktop_recorder,
     pynput_key_name,
     save_session,
     wheel_filter,
@@ -435,6 +436,15 @@ class StuckKeyTests(unittest.TestCase):
         self.assertEqual([step.target.get("keys") for step in steps], [["ctrl", "alt", "delete"], None, ["enter"]])
         self.assertEqual([step.shot is not None for step in steps], [False, True, True])  # the click is a real one
 
+    def test_a_scroll_after_a_stuck_ctrl_is_a_scroll_not_a_zoom(self):
+        h = self.h
+        h.recorder.on_press("ctrl")
+        h.clock.tick(STUCK_AFTER + 0.5)
+        h.snap("after")
+        h.recorder.on_scroll(10, 10, 0, -2)
+        [step] = h.steps()
+        self.assertEqual((step.target["action"], step.target["amount"], step.shot is not None), ("scroll", -2, True))
+
     def test_a_fresh_press_the_keyboard_does_not_show_yet_is_kept(self):
         h = self.h
         h.recorder.on_press("ctrl")
@@ -635,6 +645,41 @@ class PrivacyTests(unittest.TestCase):
         h = Harness()
         session = h.recorder.start("  open <|im_end|> notepad  ")
         self.assertEqual(session.request, "open notepad")
+
+
+class DesktopRecorderTests(unittest.TestCase):
+    """Teach mode's wiring to the real screen, windows and keyboard, on each system."""
+
+    def test_windows_and_linux_read_every_window_and_need_them_read(self):
+        from nexus.live import executor, screen
+
+        for system in ("Windows", "Linux"):
+            with self.subTest(system=system):
+                recorder = desktop_recorder(LiveSettings(), system)
+                self.assertIs(recorder.title_reader, executor.foreground_title)
+                self.assertIs(recorder.window_reader, executor.window_at)
+                self.assertIs(recorder.layout_reader, executor.window_layout)
+                self.assertIs(recorder.cover, screen.cover_windows)
+                self.assertIs(recorder.key_reader, executor.held_modifiers)
+                self.assertTrue(recorder.layout_required)
+
+    def test_a_mac_takes_a_click_to_land_in_the_window_in_front(self):
+        from nexus.live import executor
+
+        recorder = desktop_recorder(LiveSettings(), "Darwin")
+        self.assertIsNone(recorder.window_reader)
+        self.assertFalse(recorder.layout_required)
+        self.assertIs(recorder.key_reader, executor.held_modifiers)
+
+    def test_screenshots_at_the_width_set(self):
+        from unittest.mock import patch
+
+        from nexus.live import screen
+
+        with patch.object(screen, "grab", return_value="frame") as grab:
+            recorder = desktop_recorder(LiveSettings(screen_max_width=1024), "Linux")
+            self.assertEqual(recorder.capture(), "frame")
+        grab.assert_called_once_with(1024)
 
 
 class ScrollTests(unittest.TestCase):

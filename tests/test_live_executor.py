@@ -527,6 +527,128 @@ class WindowsLayoutTests(unittest.TestCase):
             self.assertIsNone(executor_module.window_layout())
 
 
+class FakeProperty:
+    def __init__(self, value):
+        self.value = value
+
+
+class FakeXWindow:
+    """An X window as _x11_layout reads it; ``fail`` is raised when it is looked at."""
+
+    def __init__(self, wid, name=None, box=(0, 0, 10, 10), pid=None, mapped=True, fail=None):
+        self.id, self.name, self.box, self.pid, self.mapped, self.fail = wid, name, box, pid, mapped, fail
+
+    def get_attributes(self):
+        if self.fail is not None:
+            raise self.fail
+        from Xlib import X
+
+        return SimpleNamespace(map_state=X.IsViewable if self.mapped else X.IsUnmapped)
+
+    def get_geometry(self):
+        return SimpleNamespace(width=self.box[2] - self.box[0], height=self.box[3] - self.box[1])
+
+    def get_full_property(self, atom, kind):
+        if atom == "_NET_WM_NAME" and self.name:
+            return FakeProperty(self.name.encode())
+        if atom == "_NET_WM_PID" and self.pid:
+            return FakeProperty([self.pid])
+        return None
+
+
+class FakeXDisplay:
+    """An X display: ``windows`` bottom first, as X lists them; ``stacking`` as a window manager's list or not."""
+
+    def __init__(self, windows, active=None, stacking=True):
+        self.windows = {window.id: window for window in windows}
+        self.order = [window.id for window in windows]
+        self.active, self.stacking = active, stacking
+        self.closed = False
+        display = self
+
+        class Root:
+            def get_full_property(self, atom, kind):
+                if atom == "_NET_CLIENT_LIST_STACKING" and display.stacking:
+                    return FakeProperty(display.order)
+                if atom == "_NET_ACTIVE_WINDOW" and display.active is not None:
+                    return FakeProperty([display.active])
+                return None
+
+            def query_tree(self):
+                return SimpleNamespace(children=[display.windows[wid] for wid in display.order])
+
+            def translate_coords(self, window, x, y):
+                return SimpleNamespace(x=window.box[0], y=window.box[1])
+
+        self.root = Root()
+
+    def screen(self):
+        return SimpleNamespace(root=self.root)
+
+    def intern_atom(self, name):
+        return name
+
+    def create_resource_object(self, kind, wid):
+        return self.windows[wid]
+
+    def close(self):
+        self.closed = True
+
+
+def closed_window_error():
+    from Xlib import error
+
+    return error.BadWindow.__new__(error.BadWindow)  # what X says about a window closed in the meantime
+
+
+@unittest.skipUnless(importlib.util.find_spec("Xlib"), "needs python-xlib")
+class X11LayoutTests(unittest.TestCase):
+    def layout(self, display):
+        with patch("Xlib.display.Display", return_value=display):
+            return executor_module._x11_layout()
+
+    def desktop(self, **options):
+        return FakeXDisplay([
+            FakeXWindow(1, None, (0, 0, 1920, 1080)),  # the desktop, at the bottom
+            FakeXWindow(2, "Database.kdbx - KeePass", (1000, 0, 1600, 900), pid=77),
+            FakeXWindow(3, "Hidden away", (0, 0, 50, 50), mapped=False),
+            FakeXWindow(4, "Notes", (0, 0, 1000, 900), pid=42),
+        ], active=4, **options)
+
+    def test_the_windows_top_first_with_their_programs_and_the_one_in_front(self):
+        display = self.desktop()
+        self.assertEqual(self.layout(display), [
+            Window("Notes", (0, 0, 1000, 900), 42, True),
+            Window("Database.kdbx - KeePass", (1000, 0, 1600, 900), 77, False),
+            Window(None, (0, 0, 1920, 1080), None, False),
+        ])
+        self.assertTrue(display.closed)
+
+    def test_without_a_window_manager_the_window_tree_is_read(self):
+        self.assertEqual([window.title for window in self.layout(self.desktop(stacking=False))],
+                         ["Notes", "Database.kdbx - KeePass", None])
+
+    def test_no_window_in_front(self):
+        display = self.desktop()
+        display.active = None
+        self.assertEqual([window.front for window in self.layout(display)], [False, False, False])
+
+    def test_a_window_closed_in_the_meantime_is_left_out(self):
+        display = self.desktop()
+        display.windows[2].fail = closed_window_error()
+        self.assertEqual([window.title for window in self.layout(display)], ["Notes", None])
+
+    def test_any_other_trouble_fails_the_whole_layout(self):
+        display = self.desktop()
+        display.windows[2].fail = RuntimeError("the server stopped answering")
+        with self.assertRaises(RuntimeError):
+            self.layout(display)
+        self.assertTrue(display.closed)
+        with patch("Xlib.display.Display", return_value=display), \
+             patch.object(executor_module.platform, "system", return_value="Linux"):
+            self.assertIsNone(executor_module.window_layout())
+
+
 class UnicodeInputTests(unittest.TestCase):
     def test_a_press_and_a_release_for_each_utf16_unit(self):
         events = executor_module.unicode_inputs("é😀")

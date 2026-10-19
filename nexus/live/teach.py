@@ -586,6 +586,27 @@ def default_folder() -> Path:
     return Path.home() / ".nexus" / "live" / "teach"
 
 
+def desktop_recorder(settings: LiveSettings, system: str | None = None) -> TeachRecorder:
+    """The recorder teach mode uses on this computer: the real screen, windows and keyboard.
+
+    A Mac cannot say which window is under the pointer or where its windows
+    are: there a click is taken to land in the window in front, and screenshots
+    are used without anything blacked out (the window in front is still never
+    recorded). Elsewhere a screenshot whose windows could not be read carries no step.
+    """
+    import platform
+
+    from nexus.live.executor import foreground_title, held_modifiers, window_at, window_layout
+    from nexus.live.screen import cover_windows, grab
+
+    on_mac = (system or platform.system()) == "Darwin"
+    return TeachRecorder(
+        settings, lambda: grab(settings.screen_max_width), foreground_title,
+        layout_reader=window_layout, cover=cover_windows, window_reader=None if on_mac else window_at,
+        key_reader=held_modifiers, layout_required=not on_mac,
+    )
+
+
 def run_teach(
     settings: LiveSettings,
     folder: Path | None = None,
@@ -597,17 +618,12 @@ def run_teach(
 
     from pynput import keyboard, mouse  # type: ignore
 
-    from nexus.live.executor import foreground_title, held_modifiers, window_at, window_layout
-    from nexus.live.screen import cover_windows, grab
+    from nexus.live.executor import foreground_title
+    from nexus.live.screen import grab
     from nexus.live.voice import hotkey_filter, hotkey_words
 
     folder = Path(folder or default_folder()).expanduser()
-    on_mac = platform.system() == "Darwin"  # where the windows on the screen cannot be read
-    recorder = TeachRecorder(
-        settings, lambda: grab(settings.screen_max_width), foreground_title,
-        layout_reader=window_layout, cover=cover_windows, window_reader=None if on_mac else window_at,
-        key_reader=held_modifiers, layout_required=not on_mac,
-    )
+    recorder = desktop_recorder(settings)
     finished = threading.Event()
     on_windows = platform.system() == "Windows"
 
