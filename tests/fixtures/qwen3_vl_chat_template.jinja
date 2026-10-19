@@ -1,0 +1,51 @@
+{#- The chat template of Qwen/Qwen3-VL-2B-Instruct (Apache-2.0), with the tool and video branches taken out.
+    It renders the system, user (image and text) and assistant messages NEXUS Vision is trained on exactly as the
+    original does, so the tiny test model sees the same token layout as the real one. -#}
+{%- if messages[0].role == 'system' %}
+    {{- '<|im_start|>system\n' }}
+    {%- if messages[0].content is string %}
+        {{- messages[0].content }}
+    {%- else %}
+        {%- for content in messages[0].content %}
+            {%- if 'text' in content %}
+                {{- content.text }}
+            {%- endif %}
+        {%- endfor %}
+    {%- endif %}
+    {{- '<|im_end|>\n' }}
+{%- endif %}
+{%- set image_count = namespace(value=0) %}
+{%- for message in messages %}
+    {%- if message.role == "user" %}
+        {{- '<|im_start|>' + message.role + '\n' }}
+        {%- if message.content is string %}
+            {{- message.content }}
+        {%- else %}
+            {%- for content in message.content %}
+                {%- if content.type == 'image' or 'image' in content or 'image_url' in content %}
+                    {%- set image_count.value = image_count.value + 1 %}
+                    {%- if add_vision_id %}Picture {{ image_count.value }}: {% endif -%}
+                    <|vision_start|><|image_pad|><|vision_end|>
+                {%- elif 'text' in content %}
+                    {{- content.text }}
+                {%- endif %}
+            {%- endfor %}
+        {%- endif %}
+        {{- '<|im_end|>\n' }}
+    {%- elif message.role == "assistant" %}
+        {{- '<|im_start|>' + message.role + '\n' }}
+        {%- if message.content is string %}
+            {{- message.content }}
+        {%- else %}
+            {%- for content_item in message.content %}
+                {%- if 'text' in content_item %}
+                    {{- content_item.text }}
+                {%- endif %}
+            {%- endfor %}
+        {%- endif %}
+        {{- '<|im_end|>\n' }}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- '<|im_start|>assistant\n' }}
+{%- endif %}
