@@ -56,7 +56,7 @@ vision = [
     "accelerate>=1.0",
     "bitsandbytes>=0.45; sys_platform != 'darwin'",
     "huggingface_hub>=0.34",
-    "peft>=0.17",
+    "peft>=0.21",
     "pillow>=10.0",
     "torch>=2.4",
     "torchvision>=0.19",
@@ -85,7 +85,7 @@ full = [
     "accelerate>=1.0",
     "bitsandbytes>=0.45; sys_platform != 'darwin'",
     "huggingface_hub>=0.34",
-    "peft>=0.17",
+    "peft>=0.21",
     "torchvision>=0.19",
 ]
 

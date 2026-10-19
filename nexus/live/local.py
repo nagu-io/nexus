@@ -200,8 +200,12 @@ class LocalVision(VisionModel):
                 return_tensors="pt",
             ).to(self._model.device)
             without_adapter = not adapter and hasattr(self._model, "disable_adapter")
+            # Generate with the model underneath PEFT's wrapper: the adapter's layers are inside it, so they
+            # still apply, but generation runs exactly as for the base model (PEFT's own generate rewrites the
+            # inputs, which some PEFT and transformers versions get wrong for Qwen3-VL's images).
+            generator = self._model.get_base_model() if hasattr(self._model, "get_base_model") else self._model
             with torch.inference_mode(), (self._model.disable_adapter() if without_adapter else contextlib.nullcontext()):
-                output = self._model.generate(**inputs, max_new_tokens=self.max_new_tokens, do_sample=False)
+                output = generator.generate(**inputs, max_new_tokens=self.max_new_tokens, do_sample=False)
             new_tokens = output[:, inputs["input_ids"].shape[1] :]
             return self._processor.batch_decode(new_tokens, skip_special_tokens=True)[0]
 

@@ -40,12 +40,17 @@ class Grade:
     distance: float | None = None
     seconds: float = 0.0
     error: str = ""
+    raw: str = ""  # the start of what the model said, to see why an answer was wrong
+
+
+SHOWN = 3  # invalid answers and errors printed per model, so a run's log says what went wrong
+RAW_KEPT = 300
 
 
 def grade(example: Example, raw: str, seconds: float = 0.0) -> Grade:
     """How the model's raw answer compares with the recorded step."""
     target = parse_decision(dict(example.target))
-    result = Grade(example.id, example.source, target.action, "invalid", False, seconds=round(seconds, 3))
+    result = Grade(example.id, example.source, target.action, "invalid", False, seconds=round(seconds, 3), raw=raw[:RAW_KEPT])
     try:
         decision = parse_decision(raw)
     except DecisionError as error:
@@ -126,6 +131,8 @@ def evaluate(
         if failure:
             result.error = failure
         grades.append(result)
+        if result.answered == "invalid" and sum(item.answered == "invalid" for item in grades) <= SHOWN:
+            printer(f"    {example.id}: {result.error[:200]} | said: {raw[:160]!r}")
         if number % 25 == 0 or number == len(chosen):
             right = sum(item.correct for item in grades)
             printer(f"  {number} of {len(chosen)}: {right} right")

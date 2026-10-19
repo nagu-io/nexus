@@ -151,12 +151,36 @@ def run(args: argparse.Namespace, printer: Callable[[str], None] = print) -> dic
         raise
 
 
+def environment() -> str:
+    """The versions and graphics card a run used, for its log."""
+    import importlib.metadata as metadata
+
+    parts = []
+    for package in ("torch", "transformers", "peft", "accelerate", "bitsandbytes"):
+        try:
+            parts.append(f"{package} {metadata.version(package)}")
+        except metadata.PackageNotFoundError:
+            parts.append(f"{package} missing")
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            major, minor = torch.cuda.get_device_capability(0)
+            parts.append(f"{torch.cuda.get_device_name(0)} (compute {major}.{minor})")
+        else:
+            parts.append("no graphics card")
+    except ImportError:
+        pass
+    return ", ".join(parts)
+
+
 def _run(args: argparse.Namespace, printer: Callable[[str], None], log: RunLog | None) -> dict[str, Any]:
     from nexus.live.atlas import fetch_os_atlas
     from nexus.live.evaluate import evaluate, held_out, report_table
     from nexus.live.finetune import TrainOptions, load_items, train
     from nexus.live.local import LocalVision
 
+    printer(environment())
     work = Path(args.work).expanduser()
     atlas_folder = work / "atlas"
     if args.limit > 0 and not (args.reuse_data and (atlas_folder / EXAMPLES_FILE).exists()):
@@ -199,17 +223,20 @@ def _run(args: argparse.Namespace, printer: Callable[[str], None], log: RunLog |
         log.upload()
 
     results: dict[str, dict[str, Any]] = {}
+    details: dict[str, list[dict[str, Any]]] = {}
     if args.eval_limit > 0:
         items, _ = load_items(data)
         held = held_out(items, options.eval_fraction)
         printer(f"Testing on {min(len(held), args.eval_limit)} held-out examples.")
         for name, model in (("NEXUS Vision", LocalVision(out)), ("Base model", LocalVision(args.base, check_card=False))):
             printer(f"{name}:")
-            summary, _ = evaluate(model, held, args.eval_limit, printer)
+            summary, grades = evaluate(model, held, args.eval_limit, printer)
             results[name] = summary
+            details[name] = [asdict(item) for item in grades]
             model.close()
     table = report_table(results) if results else "(not evaluated)"
     (out / "eval.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    (out / "eval_details.json").write_text(json.dumps(details, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     (out / "README.md").write_text(model_readme(args.push or "", training, results, table), encoding="utf-8")
     printer(table)
 

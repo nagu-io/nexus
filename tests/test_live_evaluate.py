@@ -162,6 +162,20 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(summary["share_right"], 0.5)
         self.assertEqual(lines[-1], "  2 of 2: 1 right")
 
+    def test_wrong_answers_are_shown_so_a_log_says_why(self):
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "images").mkdir()
+            (Path(folder) / "images" / "a.png").write_bytes(b"PNG")
+            items = [(Path(folder), example({"action": "done", "say": "x"}, id=f"e{index}")) for index in range(5)]
+            replies = ["I think you should click it" + "!" * 400] * 4 + [answer(action="done", say="ok")]
+            lines = []
+            summary, grades = evaluate(FakeModel(replies), items, printer=lines.append)
+        shown = [line for line in lines if line.startswith("    e")]
+        self.assertEqual(len(shown), 3)  # the first three, not every one
+        self.assertIn("e0: the answer has no JSON object in it | said: 'I think you should click it", shown[0])
+        self.assertEqual(len(grades[0].raw), 300)  # what was said is kept, cut short
+        self.assertEqual(grades[4].raw, answer(action="done", say="ok"))
+
     def test_limit(self):
         with tempfile.TemporaryDirectory() as folder:
             (Path(folder) / "images").mkdir()

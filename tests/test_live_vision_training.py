@@ -196,6 +196,10 @@ class VisionTrainingTests(unittest.TestCase):
         self.assertIn("base_model: Qwen/Qwen3-VL-2B-Instruct", readme)
         self.assertIn("| Steps right |", readme)
         self.assertEqual(sorted(json.loads((out / "eval.json").read_text())), ["Base model", "NEXUS Vision"])
+        details = json.loads((out / "eval_details.json").read_text())
+        self.assertEqual(len(details["NEXUS Vision"]), report["results"]["NEXUS Vision"]["examples"])
+        self.assertIn("raw", details["NEXUS Vision"][0])
+        self.assertIn("torch ", lines[0])  # the run's log starts with the versions and the card
         self.assertFalse(any("Uploaded" in line for line in lines))
 
 
