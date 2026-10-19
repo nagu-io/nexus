@@ -158,6 +158,13 @@ class RunTests(unittest.TestCase):
         self.assertEqual(backend.calls, [("scroll", 5 * WHEEL_NOTCH)])
         self.assertIs(type(backend.calls[-1][1]), int)
 
+    def test_scroll_amounts_become_wheel_units_on_windows(self):
+        # Windows counts a wheel notch as 120 units: one notch per step of the model's amount.
+        backend = FakeBackend()
+        with patch.object(executor_module, "WHEEL_NOTCH", 120):
+            Executor(backend=backend).run(Decision("scroll", amount=-2), None)
+        self.assertEqual(backend.calls, [("scroll", -240)])
+
     def test_wheel_notch_for_this_system(self):
         self.assertEqual(WHEEL_NOTCH, 120 if platform.system() == "Windows" else 1)
 
