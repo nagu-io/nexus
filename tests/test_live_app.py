@@ -1,5 +1,6 @@
 """Tests for nexus.live.app's LiveSession: the voice and typing loops, the stop key, and watch mode around requests."""
 
+import threading
 import unittest
 from dataclasses import replace
 from unittest.mock import patch
@@ -53,13 +54,20 @@ class FakeTranscriber:
 
 class ListenLoopTests(unittest.TestCase):
     def listen(self, live, during, texts):
-        """Run the voice loop with fake recording and speech to text, until it hears "goodbye"."""
+        """Run the voice loop with fake recording and speech to text, until it hears "goodbye".
+
+        On a thread with a time limit: a loop that waits for a talk key nobody presses fails the
+        test instead of hanging it.
+        """
         recorder = FakeRecorder(live, during)
         transcriber = FakeTranscriber(live, texts)
         live.talk_requested.set()
         with patch.object(app_module, "Recorder", return_value=recorder), \
              patch.object(app_module, "Transcriber", return_value=transcriber):
-            live.listen_loop()
+            loop = threading.Thread(target=live.listen_loop, daemon=True)
+            loop.start()
+            loop.join(5)
+        self.assertFalse(loop.is_alive(), "the voice loop never reached \"goodbye\"")
         return transcriber
 
     def test_a_request_is_handled_keeping_a_stop_pressed_since_the_talk_key(self):

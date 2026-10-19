@@ -525,6 +525,13 @@ class CoverWindowsTests(unittest.TestCase):
         self.assertTrue(self.black(frame, 50, 10))  # 100 to 101 on the screen: half Notes, half KeePass
         self.assertFalse(self.black(frame, 49, 10))
 
+    def test_a_pixel_a_hidden_window_only_partly_covers_is_covered(self):
+        # At half size, pixel 50 shows screen pixels 100 and 101; KeePass starts at 101.
+        frame = self.frame()
+        cover_windows(frame, [("KeePass", (101, 0, 200, 100))], lambda title: True)
+        self.assertTrue(self.black(frame, 50, 10))
+        self.assertFalse(self.black(frame, 49, 10))
+
     def test_nothing_hidden_leaves_the_picture_alone(self):
         frame = self.frame()
         original = frame.picture
