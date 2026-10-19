@@ -41,8 +41,9 @@ class WorkspaceDocGeneratorTests(unittest.TestCase):
             )
 
             self.assertEqual(readme.read_text(encoding="utf-8"), "# Real project docs\n")
-            self.assertTrue(result.readme_path.endswith(".nexus\\docs\\README.nexus.md"))
-            self.assertTrue(result.architecture_path.endswith(".nexus\\docs\\ARCHITECTURE.nexus.md"))
+            # By its parts, so the check holds with Linux's separators (CI) as well as Windows'.
+            self.assertEqual(Path(result.readme_path).parts[-3:], (".nexus", "docs", "README.nexus.md"))
+            self.assertEqual(Path(result.architecture_path).parts[-3:], (".nexus", "docs", "ARCHITECTURE.nexus.md"))
             self.assertTrue(Path(result.readme_path).exists())
             self.assertTrue(Path(result.architecture_path).exists())
             self.assertEqual(result.annotated_files, [])
