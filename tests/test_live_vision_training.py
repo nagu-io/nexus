@@ -167,15 +167,22 @@ class VisionTrainingTests(unittest.TestCase):
         folder = self.root / "mixed"
         make_dataset(folder, count=2)
         lines = (folder / "examples.jsonl").read_text().splitlines()
+        # Recorded under older prompts: still used when its step passes today's checks (the prompts
+        # around it are rebuilt at training time), counted invalid when it does not.
         old = json.loads(lines[0]) | {"id": "old", "prompt_version": PROMPT_VERSION - 1}
+        typing = {"thought": "", "say": "", "action": "type", "text": "hi\nthere"}
+        self.assertEqual(json.loads(lines[1])["target"]["action"], "type")
+        old_broken = json.loads(lines[1]) | {"id": "old-broken", "prompt_version": PROMPT_VERSION - 1, "target": typing}
+        newer = json.loads(lines[0]) | {"id": "newer", "prompt_version": PROMPT_VERSION + 1}
         broken = json.loads(lines[0]) | {"id": "broken", "request": ""}
         missing = json.loads(lines[0]) | {"id": "missing", "image": "images/gone.png"}
         with open(folder / "examples.jsonl", "a") as handle:
-            for item in (old, broken, missing):
+            for item in (old, old_broken, newer, broken, missing):
                 handle.write(json.dumps(item) + "\n")
         items, skipped = load_items([folder])
-        self.assertEqual(len(items), len(lines))
-        self.assertEqual(skipped, {"old prompt version": 1, "invalid": 1, "image missing": 1})
+        self.assertEqual([example.id for _, example in items][-1], "old")
+        self.assertEqual(len(items), len(lines) + 1)
+        self.assertEqual(skipped, {"newer prompt version": 1, "invalid": 2, "image missing": 1})
 
     def test_a_loss_that_becomes_nan_stops_the_run(self):
         # Trainer used to log the running average in place of a NaN loss, so an overflowed run

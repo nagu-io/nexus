@@ -27,6 +27,9 @@ NO_WINDOW = "no_window"  # NEXUS Live's own window stayed in front, so there was
 # anywhere, for keys and typing.
 CHANGED_NEAR_POINT = 0.3
 CHANGED_ANYWHERE = 0.25
+# When it has changed, two more looks this far apart tell a place that keeps moving by
+# itself (a video) from a screen that moved on and stopped (a dialog that closed).
+MOTION_LOOK = 0.3
 WINDOW_POLL = 0.25  # seconds between looks at which window is in front, while waiting for one
 WINDOW_WAITS = 3  # times one request waits for a window before giving up
 
@@ -134,6 +137,7 @@ class LiveAgent:
         if not goal:
             return Result(FINISHED)
         taken = waits = 0
+        told_why = False  # a step dropped because the screen changed is explained once a request
         while taken < self.settings.max_steps:
             if self.stop_event.is_set():
                 return Result(STOPPED, steps=steps)
@@ -165,8 +169,8 @@ class LiveAgent:
                 self._remember(goal, decision.say)
                 return Result(FINISHED, said=decision.say, steps=steps)
             if decision.action == "wait":
-                if decision.say:
-                    self.speaker.say(decision.say)
+                # What the model says on the way stays unsaid: text on the screen can steer it, and
+                # heard just before a question it would speak for the step being asked about.
                 self.sleep(decision.seconds)
                 steps.append(decision.describe())
                 continue
@@ -203,8 +207,6 @@ class LiveAgent:
                 if not approved:
                     self._remember(goal, "The user said no.")
                     return Result(DECLINED, steps=steps)
-            elif decision.say:
-                self.speaker.say(decision.say)  # nothing to approve: what it is doing, for the user to hear
 
             if not self._keys_released():
                 if self.stop_event.is_set():
@@ -217,12 +219,17 @@ class LiveAgent:
                 return Result(STOPPED, steps=steps)
 
             skipped = self._moved_on(decision, title, point, target, shot)
+            if self.stop_event.is_set():  # pressed during the last looks
+                return Result(STOPPED, steps=steps)
             if skipped:
                 steps.append(f"(not done: {skipped} before '{decision.describe()}')")
+                if not told_why:
+                    self.speaker.say(f"I didn't do that: {skipped} after I looked. Looking again.")
+                    told_why = True
                 continue
 
             try:
-                done = self.executor.run(decision, point, self.stop_event)
+                done = self.executor.run(decision, point, self.stop_event, window=title)
             except Interrupted as error:
                 if self.stop_event.is_set():
                     return Result(STOPPED, steps=steps + [f"(stopped part-way: {decision.describe()})"])
@@ -284,7 +291,20 @@ class LiveAgent:
         else:
             around, limit = None, CHANGED_ANYWHERE
         try:
-            changed = self.difference(shot.image, now.image, around)
+            changed = self.difference(shot.image, now.image, around) > limit
         except Exception:  # screenshots that cannot be compared say nothing either way
             return ""
-        return "the screen changed" if changed > limit else ""
+        if not changed:
+            return ""
+        # Changed. A video under the click changes at every look, so no screenshot would ever be new
+        # enough: it is told apart from a screen that moved on by changing again at each of two more looks.
+        try:
+            for _ in range(2):
+                self.sleep(MOTION_LOOK)
+                later = self.capture()
+                if self.difference(now.image, later.image, around) <= limit:
+                    return "the screen changed"
+                now = later
+        except Exception:  # it changed, and whether it keeps on changing cannot be told
+            return "the screen changed"
+        return ""

@@ -8,7 +8,18 @@ from types import ModuleType
 from unittest.mock import patch
 
 import nexus.live.voice as voice_module
-from nexus.live.voice import WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, HotkeyConfirmer, Speaker, hotkey_filter, hotkey_keys, hotkey_words
+from nexus.live.voice import (
+    LLKHF_INJECTED,
+    WM_KEYDOWN,
+    WM_KEYUP,
+    WM_SYSKEYDOWN,
+    HotkeyConfirmer,
+    Speaker,
+    Transcriber,
+    hotkey_filter,
+    hotkey_keys,
+    hotkey_words,
+)
 
 
 class HotkeyWordsTests(unittest.TestCase):
@@ -327,6 +338,89 @@ class HotkeyConfirmerTests(unittest.TestCase):
     def test_default_wait(self):
         self.assertEqual(HotkeyConfirmer(ListeningSpeaker(), "<ctrl>+<alt>+y", "<ctrl>+<alt>+n").timeout, 30.0)
 
+    def test_cancel_answers_a_waiting_question_with_no(self):
+        confirmer, listener = self.make(timeout=30.0)
+        listener.on_question = confirmer.cancel
+        self.assertIs(confirmer.ask("click at (500, 250)"), False)
+        self.assertEqual(len(listener.said), 1)  # no "No answer" after a wait
+
+    def test_a_cancel_before_the_question_is_no_answer_to_it(self):
+        confirmer, listener = self.make()
+        confirmer.cancel()
+        listener.on_question = confirmer.yes
+        self.assertIs(confirmer.ask("press enter"), True)
+
+
+class FakeSegment:
+    def __init__(self, text):
+        self.text = text
+
+
+class FakeWhisper:
+    """faster-whisper's WhisperModel: ``broken`` lists the devices it fails on."""
+
+    def __init__(self, made, broken):
+        self.made = made
+        self.broken = broken
+
+    def __call__(self, size, device, compute_type):
+        self.made.append((size, device, compute_type))
+        broken = self.broken
+
+        class Model:
+            def transcribe(self, audio, beam_size, vad_filter):
+                if device in broken:
+                    raise RuntimeError(f"{device} failed with error out of memory")
+                return iter([FakeSegment(" open "), FakeSegment("notepad ")]), None
+
+        return Model()
+
+
+class TranscriberTests(unittest.TestCase):
+    def transcriber(self, cards=1, broken=()):
+        made = []
+        whisper = ModuleType("faster_whisper")
+        whisper.WhisperModel = FakeWhisper(made, broken)
+        ctranslate2 = ModuleType("ctranslate2")
+        ctranslate2.get_cuda_device_count = lambda: cards
+        patcher = patch.dict(sys.modules, {"faster_whisper": whisper, "ctranslate2": ctranslate2})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return Transcriber("base"), made
+
+    def test_on_the_graphics_card_when_there_is_one(self):
+        transcriber, made = self.transcriber()
+        self.assertEqual(transcriber.transcribe([0.1]), "open notepad")
+        self.assertEqual(made, [("base", "cuda", "float16")])
+
+    def test_on_the_processor_without_one(self):
+        transcriber, made = self.transcriber(cards=0)
+        self.assertEqual(transcriber.transcribe([0.1]), "open notepad")
+        self.assertEqual(made, [("base", "cpu", "int8")])
+
+    def test_a_graphics_card_that_fails_hands_over_to_the_processor_for_good(self):
+        transcriber, made = self.transcriber(broken=("cuda",))
+        self.assertEqual(transcriber.transcribe([0.1]), "open notepad")
+        self.assertEqual(transcriber.transcribe([0.2]), "open notepad")
+        self.assertEqual(made, [("base", "cuda", "float16"), ("base", "cpu", "int8")])
+
+    def test_a_processor_that_fails_is_reported(self):
+        transcriber, made = self.transcriber(cards=0, broken=("cpu",))
+        with self.assertRaises(RuntimeError):
+            transcriber.transcribe([0.1])
+        self.assertEqual(made, [("base", "cpu", "int8")])
+
+    def test_both_failing_is_reported(self):
+        transcriber, made = self.transcriber(broken=("cuda", "cpu"))
+        with self.assertRaises(RuntimeError):
+            transcriber.transcribe([0.1])
+        self.assertEqual(made, [("base", "cuda", "float16"), ("base", "cpu", "int8")])
+
+    def test_silence_needs_no_model(self):
+        transcriber, made = self.transcriber()
+        self.assertEqual((transcriber.transcribe([]), transcriber.transcribe(None)), ("", ""))
+        self.assertEqual(made, [])
+
 
 class HotkeyKeysTests(unittest.TestCase):
     def test_modifiers_and_the_last_key(self):
@@ -342,8 +436,11 @@ class HotkeyKeysTests(unittest.TestCase):
 
 
 class HookData:
-    def __init__(self, code):
+    """pynput's KBDLLHOOKSTRUCT as far as the filter reads it."""
+
+    def __init__(self, code, flags=0):
         self.vkCode = code
+        self.flags = flags
 
 
 class Suppressed(Exception):
@@ -385,10 +482,10 @@ class HotkeyFilterTests(unittest.TestCase):
         self.threads = threads
         self.filter = hotkey_filter(callbacks, lambda: self.listener, held=lambda: self.held)
 
-    def send(self, message, code):
+    def send(self, message, code, flags=0):
         """True when the key goes on to the window (and pynput); False when it was kept back."""
         try:
-            self.filter(message, HookData(code))
+            self.filter(message, HookData(code, flags))
         except Suppressed:
             return False
         finally:
@@ -423,6 +520,25 @@ class HotkeyFilterTests(unittest.TestCase):
         self.assertTrue(self.send(WM_KEYDOWN, ord("A")))
         self.assertTrue(self.send(0x0104, 0x11))  # Ctrl itself
         self.assertEqual(self.listener.suppressed, 0)
+
+    def test_keys_a_program_typed_are_never_the_user_s_hotkeys(self):
+        # pyautogui types "@" on a German keyboard as injected Ctrl, Alt and Q: NEXUS typing an e-mail
+        # address must not stop NEXUS, and the "@" must reach the window.
+        self.assertTrue(self.send(WM_KEYDOWN, ord("Q"), LLKHF_INJECTED))
+        self.assertTrue(self.send(WM_KEYUP, ord("Q"), LLKHF_INJECTED))
+        self.assertTrue(self.send(WM_KEYDOWN, ord("Y"), LLKHF_INJECTED | 0x01))
+        self.assertEqual((self.fired, self.listener.suppressed), ([], 0))
+        self.assertFalse(self.send(WM_KEYDOWN, ord("Q"), 0x01))  # other flags (an extended key) are the user's own
+        self.assertEqual(self.fired, ["stop"])
+
+    def test_the_held_keys_are_read_the_hotkeys_way_by_default(self):
+        # Where the right Alt is AltGr, Windows reports AltGr+Q as Ctrl and Alt held: the default reader
+        # counts only the left Alt, so AltGr+Q types "@" (see executor.hotkey_modifiers).
+        with patch("nexus.live.executor.hotkey_modifiers", return_value=frozenset({"ctrl"})) as reader:
+            plain = hotkey_filter({"<ctrl>+<alt>+q": lambda: self.fired.append("stop")}, lambda: self.listener)
+            self.assertTrue(plain(WM_KEYDOWN, HookData(ord("Q"))))
+        self.assertEqual(reader.call_count, 1)
+        self.assertEqual(self.fired, [])
 
     def test_a_mistake_in_the_filter_never_costs_the_hotkeys(self):
         self.held = None

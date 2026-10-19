@@ -15,6 +15,7 @@ from nexus.live.screen import (
     Frame,
     OutsideScreen,
     Shot,
+    Window,
     changed_near,
     cover_windows,
     grab,
@@ -477,6 +478,21 @@ class FrameTests(unittest.TestCase):
         self.assertEqual(frame.picture.getpixel((5, 5)), (10, 20, 30))
 
 
+NOTEPAD, KEEPASS, CHROME = 101, 202, 303  # the programs the windows belong to
+
+
+def notepad(box, front=True):
+    return Window("Untitled - Notepad", box, NOTEPAD, front)
+
+
+def keepass(box, title="KeePass"):
+    return Window(title, box, KEEPASS)
+
+
+def keepass_hidden(title):
+    return title == "KeePass"
+
+
 @unittest.skipUnless(HAS_PILLOW, "needs Pillow")
 class CoverWindowsTests(unittest.TestCase):
     """Teach mode's screenshots never show a blocked window, wherever it is on the screen."""
@@ -493,63 +509,108 @@ class CoverWindowsTests(unittest.TestCase):
     def test_a_blocked_window_beside_the_one_in_use_is_blacked_out(self):
         frame = self.frame()
         before = frame.image  # a PNG made before covering is not the one saved
-        layout = [("Untitled - Notepad", (0, 0, 100, 100)), ("KeePass", (100, 0, 200, 100))]
-        self.assertTrue(cover_windows(frame, layout, lambda title: title == "KeePass"))
+        layout = [notepad((0, 0, 100, 100)), keepass((100, 0, 200, 100))]
+        self.assertTrue(cover_windows(frame, layout, keepass_hidden))
         self.assertTrue(self.black(frame, 75, 25))
         self.assertFalse(self.black(frame, 25, 25))
         self.assertNotEqual(frame.image, before)
         with opened(frame.image) as picture:
             self.assertEqual(picture.convert("RGB").getpixel((75, 25)), (0, 0, 0))
 
-    def test_only_the_part_that_shows_is_covered(self):
+    def test_the_window_in_front_uncovers_only_the_part_of_it_that_it_covers(self):
         # KeePass lies behind Notepad, which covers its left half.
         frame = self.frame()
-        layout = [("Untitled - Notepad", (0, 0, 120, 100)), ("KeePass", (60, 0, 200, 100))]
-        cover_windows(frame, layout, lambda title: title == "KeePass")
+        layout = [notepad((0, 0, 120, 100)), keepass((60, 0, 200, 100))]
+        cover_windows(frame, layout, keepass_hidden)
         self.assertFalse(self.black(frame, 55, 25))  # Notepad, over KeePass
         self.assertTrue(self.black(frame, 65, 25))  # KeePass, where it shows
         self.assertTrue(self.black(frame, 99, 49))
 
     def test_a_blocked_window_on_top_covers_what_is_under_it(self):
         frame = self.frame()
-        layout = [("KeePass", (40, 20, 80, 60)), ("Untitled - Notepad", (0, 0, 200, 100))]
-        cover_windows(frame, layout, lambda title: title == "KeePass")
+        layout = [keepass((40, 20, 80, 60)), notepad((0, 0, 200, 100))]
+        cover_windows(frame, layout, keepass_hidden)
         self.assertTrue(self.black(frame, 30, 20))
         self.assertFalse(self.black(frame, 10, 10))
 
     def test_edges_are_covered_generously_and_uncovered_strictly(self):
-        # Half-pixel edges round outward for a hidden window, inward for one over it.
+        # Half-pixel edges round outward for a hidden window, inward for the one in front over it.
         frame = self.frame()
-        layout = [("Notes", (0, 0, 101, 100)), ("KeePass", (99, 0, 200, 100))]
-        cover_windows(frame, layout, lambda title: title == "KeePass")
+        layout = [Window("Notes", (0, 0, 101, 100), NOTEPAD, True), keepass((99, 0, 200, 100))]
+        cover_windows(frame, layout, keepass_hidden)
         self.assertTrue(self.black(frame, 50, 10))  # 100 to 101 on the screen: half Notes, half KeePass
         self.assertFalse(self.black(frame, 49, 10))
 
     def test_a_pixel_a_hidden_window_only_partly_covers_is_covered(self):
         # At half size, pixel 50 shows screen pixels 100 and 101; KeePass starts at 101.
         frame = self.frame()
-        cover_windows(frame, [("KeePass", (101, 0, 200, 100))], lambda title: True)
+        cover_windows(frame, [keepass((101, 0, 200, 100))], lambda title: True)
         self.assertTrue(self.black(frame, 50, 10))
         self.assertFalse(self.black(frame, 49, 10))
 
     def test_nothing_hidden_leaves_the_picture_alone(self):
         frame = self.frame()
         original = frame.picture
-        self.assertFalse(cover_windows(frame, [("Notepad", (0, 0, 200, 100))], lambda title: False))
+        self.assertFalse(cover_windows(frame, [notepad((0, 0, 200, 100))], lambda title: False))
         self.assertIs(frame.picture, original)
 
     def test_windows_off_this_monitor_or_with_no_size_do_nothing(self):
         frame = self.frame()
-        layout = [("KeePass", (-500, 0, -100, 100)), ("KeePass", (50, 50, 50, 90))]
+        layout = [keepass((-500, 0, -100, 100)), keepass((50, 50, 50, 90))]
         self.assertFalse(cover_windows(frame, layout, lambda title: True))
 
     def test_a_monitor_that_does_not_start_at_zero(self):
         from PIL import Image
 
         frame = Frame(Image.new("RGB", (100, 50), (200, 200, 200)), 200, 100, left=-200, top=0)
-        cover_windows(frame, [("KeePass", (-100, 0, 0, 100))], lambda title: True)
+        cover_windows(frame, [keepass((-100, 0, 0, 100))], lambda title: True)
         self.assertTrue(self.black(frame, 75, 25))
         self.assertFalse(self.black(frame, 25, 25))
+
+    def test_a_see_through_window_on_top_never_uncovers_a_blocked_one(self):
+        # A graphics card's full-screen overlay, a screen recorder's frame, any untitled window on top:
+        # visible top-level windows that show what is under them.
+        for overlay in (Window("NVIDIA GeForce Overlay", (0, 0, 200, 100), 404), Window(None, (0, 0, 200, 100), None)):
+            with self.subTest(overlay=overlay.title):
+                frame = self.frame()
+                layout = [overlay, notepad((0, 0, 100, 100)), keepass((100, 0, 200, 100))]
+                self.assertTrue(cover_windows(frame, layout, keepass_hidden))
+                self.assertTrue(self.black(frame, 75, 25))
+                self.assertFalse(self.black(frame, 25, 25))
+
+    def test_a_window_not_in_front_never_hides_a_blocked_one(self):
+        frame = self.frame()
+        layout = [Window("Calculator", (100, 0, 150, 100), 505), notepad((0, 0, 100, 100)), keepass((100, 0, 200, 100))]
+        cover_windows(frame, layout, keepass_hidden)
+        self.assertTrue(self.black(frame, 60, 25))  # under the calculator, KeePass is still covered
+
+    def test_a_blocked_program_s_other_windows_are_covered_titled_or_not(self):
+        # KeePass's tooltip, drop-down or dialog over Notepad: its own window, no blocked title of its own.
+        frame = self.frame()
+        layout = [keepass((80, 20, 140, 60), title=None), keepass((20, 60, 60, 100), title="Edit Entry"),
+                  notepad((0, 0, 100, 100)), keepass((100, 0, 200, 100))]
+        cover_windows(frame, layout, keepass_hidden)
+        self.assertTrue(self.black(frame, 45, 20))  # the tooltip, over Notepad
+        self.assertTrue(self.black(frame, 20, 40))  # the dialog, over Notepad
+        self.assertFalse(self.black(frame, 25, 15))  # Notepad itself
+
+    def test_a_program_s_window_in_front_stays_when_another_of_its_windows_is_blocked(self):
+        # One browser program, two windows: the bank's behind the one being worked in.
+        frame = self.frame()
+        layout = [Window("Inbox - Gmail - Google Chrome", (0, 0, 120, 100), CHROME, True),
+                  Window("Online Banking - Google Chrome", (60, 0, 200, 100), CHROME)]
+        cover_windows(frame, layout, lambda title: "Banking" in (title or ""))
+        self.assertFalse(self.black(frame, 25, 25))
+        self.assertFalse(self.black(frame, 55, 25))  # the window in front, over the bank's
+        self.assertTrue(self.black(frame, 65, 25))
+
+    def test_windows_whose_program_is_unknown_are_not_grouped(self):
+        frame = self.frame()
+        layout = [Window("Untitled - Notepad", (0, 0, 100, 100), None, True), Window(None, (100, 0, 150, 100), None),
+                  Window("KeePass", (150, 0, 200, 100), None)]
+        cover_windows(frame, layout, keepass_hidden)
+        self.assertFalse(self.black(frame, 60, 25))  # an untitled window of no known program, beside KeePass
+        self.assertTrue(self.black(frame, 90, 25))
 
 
 if __name__ == "__main__":

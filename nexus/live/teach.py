@@ -28,7 +28,8 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from nexus.live.data import IMAGES_DIR, Example, write_examples
-from nexus.live.model import KEY_NAMES, Decision, clean
+from nexus.live.model import KEY_NAMES, Decision, DecisionError, clean, parse_decision
+from nexus.live.policy import Policy
 from nexus.live.screen import NORMALIZED_SPAN
 from nexus.live.settings import LiveSettings, blocked_by
 
@@ -49,6 +50,9 @@ SCROLL_PAUSE = 1.5  # seconds between wheel turns that make them separate scroll
 MAX_SCROLL = 20
 WHEEL_DELTA = 120  # Windows' units in one wheel notch
 SNAPSHOTS = 20  # screenshots kept, about two seconds' worth
+# A modifier the listener saw go down but that the keyboard says is up, this long after: its release was
+# never heard (Win+L and Ctrl+Alt+Del let go of the keys on another screen).
+STUCK_AFTER = 1.0
 
 
 @dataclass
@@ -56,6 +60,7 @@ class _Snapshot:
     at: float  # when the grab started
     shot: Any
     title: str | None  # the window in front for the whole grab; None if it changed or could not be read
+    problem: str = ""  # why no step may use it, when that is not the window in front
 
 
 @dataclass
@@ -128,6 +133,8 @@ class TeachRecorder:
         layout_reader: Callable[[], list | None] | None = None,
         cover: Callable[[Any, list, Callable[[str | None], bool]], bool] | None = None,
         window_reader: Callable[[tuple[int, int]], str | None] | None = None,
+        key_reader: Callable[[], frozenset[str] | None] | None = None,
+        layout_required: bool = False,
     ):
         self.settings = settings
         self.capture = capture
@@ -136,7 +143,13 @@ class TeachRecorder:
         self.interval = interval
         self.layout_reader = layout_reader
         self.cover = cover
-        self.window_reader = window_reader
+        self.window_reader = window_reader  # None: the window under a click is taken to be the one in front
+        self.key_reader = key_reader
+        # Where the windows on the screen can be read (Windows, Linux), a screenshot whose blocked
+        # windows could not be blacked out goes with no step.
+        self.layout_required = layout_required
+        self.policy = Policy(settings)
+        self._pressed_at: dict[str, float] = {}
         self.session: TeachSession | None = None
         self.paused = False
         self.own_titles: set[str] = set()  # NEXUS Live's own console
@@ -157,12 +170,15 @@ class TeachRecorder:
         started = self.clock()
         shot = self.capture()
         after = self.title_reader()
+        problem = ""
         if self.layout_reader is not None and self.cover is not None:
-            layout = self.layout_reader()
+            layout = self.layout_reader()  # a failure here, or in cover, keeps the screenshot out altogether
             if layout is not None:
                 self.cover(shot, layout, self.hidden)
+            elif self.layout_required:
+                problem = "the windows on the screen could not be read, so private ones could not be blacked out in its screenshot"
         with self._lock:
-            self._shots.append(_Snapshot(started, shot, before if before == after else None))
+            self._shots.append(_Snapshot(started, shot, before if before == after else None, problem))
             if self._pending.text and self.clock() - self._pending.last_key >= TYPING_PAUSE:
                 self._flush_typing()
 
@@ -195,6 +211,8 @@ class TeachRecorder:
                 continue
             if snapshot.at < self._quiet_from:
                 return None, "too soon after the step before it for a screenshot to show that step"
+            if snapshot.problem:
+                return None, snapshot.problem
             if not self._usable(snapshot.title):
                 return None, "its screenshot was taken while a window that is not recorded was in front"
             return snapshot.shot, ""
@@ -220,6 +238,14 @@ class TeachRecorder:
         if self.session is None:
             return
         target = {"thought": "", "say": "", **target}
+        if target["action"] in ("press", "hotkey") and shot is not None:
+            # Keys NEXUS Live refuses at run time (Ctrl+Esc, Ctrl+Shift+Esc) would teach a step that always fails.
+            try:
+                refusal = self.policy.key_refusal(parse_decision(dict(target)))
+            except DecisionError:
+                refusal = ""
+            if refusal:
+                shot, why = None, f"NEXUS Live never takes this step: {refusal}"
         self.session.steps.append(Step(target, shot, title, self.clock(), point, why, described))
 
     def _flush_typing(self) -> None:
@@ -234,9 +260,28 @@ class TeachRecorder:
     def _held_modifiers(self) -> list[str]:
         return [key for key in HELD_KEYS if key in self._held]
 
-    def _lands_in_hidden(self, x: int, y: int) -> bool:
-        # A click or scroll goes to the window under the pointer, which need not be the one in front.
-        return self.window_reader is not None and self.hidden(self.window_reader((x, y)))
+    def _forget_stuck(self, moment: float) -> None:
+        """Let go of modifiers the keyboard says are up whose release the listener never heard."""
+        if self.key_reader is None or not self._held:
+            return
+        actual = self.key_reader()
+        if actual is None:
+            return
+        for key in list(self._held):
+            # A fresh press may not be visible yet: only one held a while is let go of.
+            if key not in actual and moment - self._pressed_at.get(key, moment) > STUCK_AFTER:
+                self._held.discard(key)
+
+    def _lands_unrecorded(self, x: int, y: int) -> bool:
+        """Whether a click or scroll at (x, y) lands in a window that is not recorded.
+
+        It goes to the window under the pointer, which need not be the one in
+        front. One whose title cannot be read could be any window: not recorded.
+        """
+        if self.window_reader is None:
+            return False
+        under = self.window_reader((x, y))
+        return under is None or self.hidden(under)
 
     # Mouse
     def on_click(self, x: int, y: int, button: str, pressed: bool) -> None:
@@ -244,11 +289,12 @@ class TeachRecorder:
             return
         with self._lock:
             title = self.title_reader()
-            if not self._usable(title) or self._lands_in_hidden(x, y):
+            if not self._usable(title) or self._lands_unrecorded(x, y):
                 self._pending = _Pending()
                 return
             self._flush_typing()
             moment = self.clock()
+            self._forget_stuck(moment)
             geometry = self._geometry()
             if geometry is None:
                 return
@@ -289,10 +335,11 @@ class TeachRecorder:
             return
         with self._lock:
             title = self.title_reader()
-            if not self._usable(title) or self._lands_in_hidden(x, y):
+            if not self._usable(title) or self._lands_unrecorded(x, y):
                 return
             self._flush_typing()
             moment = self.clock()
+            self._forget_stuck(moment)
             held = self._held_modifiers()
             last = self._last_step()
             if (
@@ -330,7 +377,9 @@ class TeachRecorder:
             name = key.lower() if len(key) > 1 else key
             if name in HELD_KEYS:
                 self._held.add(name)
+                self._pressed_at[name] = self.clock()
                 return
+            self._forget_stuck(self.clock())
             if frozenset(self._held | {name.lower()}) in self._ignored_hotkeys:
                 return
             if "win" in self._held:
@@ -548,14 +597,16 @@ def run_teach(
 
     from pynput import keyboard, mouse  # type: ignore
 
-    from nexus.live.executor import foreground_title, window_at, window_layout
+    from nexus.live.executor import foreground_title, held_modifiers, window_at, window_layout
     from nexus.live.screen import cover_windows, grab
     from nexus.live.voice import hotkey_filter, hotkey_words
 
     folder = Path(folder or default_folder()).expanduser()
+    on_mac = platform.system() == "Darwin"  # where the windows on the screen cannot be read
     recorder = TeachRecorder(
         settings, lambda: grab(settings.screen_max_width), foreground_title,
-        layout_reader=window_layout, cover=cover_windows, window_reader=window_at,
+        layout_reader=window_layout, cover=cover_windows, window_reader=None if on_mac else window_at,
+        key_reader=held_modifiers, layout_required=not on_mac,
     )
     finished = threading.Event()
     on_windows = platform.system() == "Windows"

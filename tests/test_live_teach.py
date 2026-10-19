@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from nexus.live.data import read_examples
-from nexus.live.screen import Shot
+from nexus.live.screen import Shot, Window
 from nexus.live.settings import LiveSettings
 from nexus.live.teach import (
     DOUBLE_CLICK_SECONDS,
@@ -16,6 +16,7 @@ from nexus.live.teach import (
     SCROLL_PAUSE,
     SETTLE,
     SETTLE_TYPED,
+    STUCK_AFTER,
     TYPING_PAUSE,
     WM_MOUSEWHEEL,
     Step,
@@ -45,17 +46,22 @@ def shot(label: str, width=1920, height=1080, left=0, top=0) -> Shot:
 
 
 class Harness:
-    """A recorder with a fake screen, clock and window title; ``snap`` takes a screenshot labelled ``label``."""
+    """A recorder with a fake screen, clock and window title; ``snap`` takes a screenshot labelled ``label``.
+
+    ``keys`` is what the keyboard says is held down (None: it cannot be read).
+    """
 
     def __init__(self, title="Notepad", under=None, **settings):
         self.clock = Clock()
         self.title = title
         self.under = under  # the window under the pointer, when a test sets one
+        self.keys = None
         self.label = "s0"
         self.screen = {"width": 1920, "height": 1080, "left": 0, "top": 0}
         self.recorder = TeachRecorder(
             LiveSettings(**settings), lambda: shot(self.label, **self.screen), lambda: self.title, clock=self.clock,
             window_reader=lambda point: self.under if self.under is not None else self.title,
+            key_reader=lambda: self.keys,
         )
 
     def snap(self, label, wait=0.3):
@@ -363,6 +369,25 @@ class KeysNexusNeverPressesTests(unittest.TestCase):
         self.h.recorder.on_press("t", None)
         self.assertEqual(self.h.steps()[0].target["keys"], ["ctrl", "alt", "t"])
 
+    def test_combinations_nexus_live_refuses_are_history_only(self):
+        # Saved as examples they would teach steps that always end the request as refused.
+        for keys in (("ctrl", "esc"), ("ctrl", "shift", "esc")):
+            with self.subTest(keys=keys):
+                h = Harness()
+                h.recorder.start("open the start menu")
+                h.snap("s")
+                for key in keys:
+                    h.recorder.on_press(key)
+                [step] = h.steps()
+                self.assertEqual((step.target["keys"], step.shot), (list(keys), None))
+                self.assertEqual(step.why, "NEXUS Live never takes this step: I don't press system key combinations like that one.")
+
+    def test_other_shortcuts_keep_their_screenshot(self):
+        self.h.recorder.on_press("ctrl")
+        self.h.recorder.on_press("s", "\x13")
+        [step] = self.h.steps()
+        self.assertEqual((step.target["keys"], step.shot.image, step.why), (["ctrl", "s"], b"s", ""))
+
     def test_the_windows_key_is_never_recorded(self):
         # Win then R opened the Run box; saved as "press win" it taught a step that is always refused.
         self.h.recorder.on_press("win")
@@ -373,6 +398,64 @@ class KeysNexusNeverPressesTests(unittest.TestCase):
         self.assertEqual(self.h.steps(), [])
         self.h.recorder.on_press("a", "a")  # once it is up, keys are recorded again
         self.assertEqual([step.target["text"] for step in self.h.recorder.stop().steps], ["a"])
+
+
+class StuckKeyTests(unittest.TestCase):
+    """Win+L and Ctrl+Alt+Del let go of the keys on another screen, where the listener hears nothing."""
+
+    def setUp(self):
+        self.h = Harness()
+        self.h.keys = frozenset()  # the keyboard says nothing is down
+        self.h.recorder.start("write a note")
+        self.h.snap("s")
+
+    def test_the_windows_key_left_down_by_the_lock_screen_is_let_go_of(self):
+        h = self.h
+        h.recorder.on_press("win")
+        h.recorder.on_press("l", "l")
+        h.clock.tick(STUCK_AFTER + 0.5)
+        for character in "thanks":
+            h.recorder.on_press(character, character)
+        h.recorder.on_press("enter")
+        self.assertEqual([step.target for step in h.steps()],
+                         [{"thought": "", "say": "", "action": "type", "text": "thanks"},
+                          {"thought": "", "say": "", "action": "press", "keys": ["enter"]}])
+
+    def test_ctrl_and_alt_left_down_by_the_secure_screen_are_let_go_of(self):
+        h = self.h
+        for key in ("ctrl", "alt", "delete"):
+            h.recorder.on_press(key)
+        h.clock.tick(STUCK_AFTER + 0.5)
+        h.snap("after")
+        h.recorder.on_click(10, 10, "left", True)
+        h.clock.tick(1.0)
+        h.snap("later")
+        h.recorder.on_press("enter")
+        steps = h.steps()
+        self.assertEqual([step.target.get("keys") for step in steps], [["ctrl", "alt", "delete"], None, ["enter"]])
+        self.assertEqual([step.shot is not None for step in steps], [False, True, True])  # the click is a real one
+
+    def test_a_fresh_press_the_keyboard_does_not_show_yet_is_kept(self):
+        h = self.h
+        h.recorder.on_press("ctrl")
+        h.recorder.on_press("s", "\x13")
+        self.assertEqual(h.steps()[0].target["keys"], ["ctrl", "s"])
+
+    def test_a_key_still_down_is_kept_however_long_it_is_held(self):
+        h = self.h
+        h.keys = frozenset({"shift"})
+        h.recorder.on_press("shift")
+        h.clock.tick(5.0)
+        h.recorder.on_press("tab")
+        self.assertEqual(h.steps()[0].target["keys"], ["shift", "tab"])
+
+    def test_a_keyboard_that_cannot_be_read_lets_go_of_nothing(self):
+        h = self.h
+        h.keys = None
+        h.recorder.on_press("win")
+        h.clock.tick(5.0)
+        h.recorder.on_press("a", "a")
+        self.assertEqual(h.steps(), [])
 
 
 class PrivacyTests(unittest.TestCase):
@@ -425,6 +508,25 @@ class PrivacyTests(unittest.TestCase):
         h.recorder.on_scroll(10, 10, 0, -2)
         self.assertEqual(h.steps(), [])
 
+    def test_a_click_into_a_window_whose_title_cannot_be_read_is_not_recorded(self):
+        # Like an unreadable window in front: it could be any window, a blocked one included.
+        h = Harness(title="Untitled - Notepad")
+        h.recorder.window_reader = lambda point: None
+        h.recorder.start("x")
+        h.snap("s")
+        h.recorder.on_click(10, 10, "left", True)
+        h.recorder.on_scroll(10, 10, 0, -2)
+        self.assertEqual(h.steps(), [])
+
+    def test_without_a_reader_a_click_lands_in_the_window_in_front(self):
+        # On a Mac the window under the pointer cannot be read.
+        h = Harness(title="Untitled - Notepad")
+        h.recorder.window_reader = None
+        h.recorder.start("x")
+        h.snap("s")
+        h.recorder.on_click(10, 10, "left", True)
+        self.assertEqual(h.actions(), ["click"])
+
     def test_typing_carried_into_a_blocked_window_is_dropped(self):
         h = Harness()
         h.recorder.start("note")
@@ -459,11 +561,11 @@ class PrivacyTests(unittest.TestCase):
 
     def test_blocked_windows_are_covered_in_every_screenshot(self):
         covered = []
-        layout = [("Untitled - Notepad", (0, 0, 800, 600)), ("KeePass", (700, 0, 1920, 1080))]
+        layout = [Window("Untitled - Notepad", (0, 0, 800, 600), 1, True), Window("KeePass", (700, 0, 1920, 1080), 2)]
         recorder = TeachRecorder(
             LiveSettings(), lambda: shot("s"), lambda: "Untitled - Notepad", clock=Clock(),
             layout_reader=lambda: layout, cover=lambda frame, windows, hidden: covered.append(
-                (frame.image, windows, [hidden(title) for title, _ in windows])),
+                (frame.image, windows, [hidden(window.title) for window in windows])),
         )
         recorder.own_titles.add("nexus - Visual Studio Code")
         recorder.start("x")
@@ -482,6 +584,35 @@ class PrivacyTests(unittest.TestCase):
         recorder.start("x")
         recorder.snap()
         self.assertEqual(covered, [])
+
+    def recorder_with_layout(self, layout_reader, required):
+        clock = Clock()
+        recorder = TeachRecorder(LiveSettings(), lambda: shot("s"), lambda: "Notepad", clock=clock,
+                                 layout_reader=layout_reader, cover=lambda *args: True, layout_required=required)
+        recorder.start("x")
+        try:
+            recorder.snap()
+        except OSError:
+            pass  # run_snapshots carries on to the next screenshot
+        clock.tick(0.3)
+        recorder.on_click(10, 10, "left", True)
+        return recorder.session.steps
+
+    def test_where_windows_can_be_read_a_screenshot_they_could_not_be_read_for_goes_with_no_step(self):
+        [step] = self.recorder_with_layout(lambda: None, required=True)
+        self.assertIsNone(step.shot)
+        self.assertEqual(step.why, "the windows on the screen could not be read, so private ones could not be blacked out in its screenshot")
+
+    def test_a_mac_screenshot_is_used_unmasked(self):
+        # A Mac cannot list the windows: the blocked one in front is still never recorded.
+        [step] = self.recorder_with_layout(lambda: None, required=False)
+        self.assertEqual(step.shot.image, b"s")
+
+    def test_a_layout_that_fails_keeps_the_screenshot_out(self):
+        def broken():
+            raise OSError("EnumWindows failed")
+
+        self.assertEqual(self.recorder_with_layout(broken, required=True), [])  # no screenshot at all, so no step
 
     def test_paused_records_nothing(self):
         h = Harness()

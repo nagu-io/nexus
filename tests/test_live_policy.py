@@ -138,6 +138,29 @@ class SystemKeyTests(unittest.TestCase):
         self.assertEqual(check(Decision("press", keys=("esc",))), Verdict(CONFIRM))
 
 
+class KeyRefusalTests(unittest.TestCase):
+    """The key rules on their own, as teach mode uses them: they hold in every window, whatever it is."""
+
+    def test_the_reasons(self):
+        policy = Policy(LiveSettings(allowed_windows=("notepad",)))
+        self.assertEqual(policy.key_refusal(keys("win", "r")), WINDOWS_KEY)
+        self.assertEqual(policy.key_refusal(keys("ctrl", "shift", "esc")), SYSTEM_COMBO)
+        self.assertEqual(policy.key_refusal(keys("ctrl", "esc")), SYSTEM_COMBO)
+        self.assertEqual(policy.key_refusal(keys("ctrl", "alt", "q")), "That is one of my own hotkeys, so I don't press it.")
+
+    def test_everything_else_passes_whatever_the_windows_allowed(self):
+        policy = Policy(LiveSettings(allowed_windows=("notepad",)))
+        for decision in (HOTKEY, PRESS, TYPE, CLICK, SCROLL, keys("ctrl", "alt"), Decision("press", keys=("esc",))):
+            with self.subTest(decision=decision.describe()):
+                self.assertEqual(policy.key_refusal(decision), "")
+
+    def test_the_check_refuses_for_the_same_reasons(self):
+        policy = Policy(LiveSettings())
+        for decision in (keys("win", "r"), keys("ctrl", "esc"), keys("ctrl", "alt", "y")):
+            with self.subTest(keys=decision.keys):
+                self.assertEqual(policy.check(decision, NOTEPAD), Verdict(REFUSE, policy.key_refusal(decision)))
+
+
 class UnknownWindowTests(unittest.TestCase):
     def test_unknown_window_is_asked_about(self):
         for decision in ACTING_STEPS:

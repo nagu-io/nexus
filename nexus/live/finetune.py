@@ -85,14 +85,21 @@ class TrainingDataError(ValueError):
 
 
 def load_items(folders: Sequence[Path]) -> tuple[list[tuple[Path, Example]], dict[str, int]]:
-    """The usable examples of each dataset folder, and how many were skipped and why."""
+    """The usable examples of each dataset folder, and how many were skipped and why.
+
+    An example recorded under older prompts is still used when its step passes
+    today's checks: the conversation around it is built from the current
+    prompts at training time, so only the step itself has to still be one
+    NEXUS Live can take. (A recording is never thrown away just for its age.)
+    One from newer prompts than this code knows is skipped.
+    """
     items: list[tuple[Path, Example]] = []
-    skipped = {"old prompt version": 0, "invalid": 0, "image missing": 0}
+    skipped = {"newer prompt version": 0, "invalid": 0, "image missing": 0}
     for folder in folders:
         folder = Path(folder).expanduser()
         for example in read_examples(folder):
-            if example.prompt_version != PROMPT_VERSION:
-                skipped["old prompt version"] += 1
+            if example.prompt_version > PROMPT_VERSION:
+                skipped["newer prompt version"] += 1
                 continue
             try:
                 example.check()

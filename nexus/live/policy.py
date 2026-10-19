@@ -60,14 +60,9 @@ class Policy:
         if decision.action in QUIET_ACTIONS:
             return Verdict(ALLOW)
 
-        keys = set(decision.keys)
-        if keys & SYSTEM_KEYS:
-            return Verdict(REFUSE, "I don't use the Windows key: it opens the Run box and system menus.")
-        if any(combo <= keys for combo in SYSTEM_COMBOS):
-            return Verdict(REFUSE, "I don't press system key combinations like that one.")
-        if any(combo <= keys for combo in self.own_hotkeys):
-            # It would answer my own question, stop me, or start recording whatever is said nearby.
-            return Verdict(REFUSE, "That is one of my own hotkeys, so I don't press it.")
+        refusal = self.key_refusal(decision)
+        if refusal:
+            return Verdict(REFUSE, refusal)
 
         verdicts = [self._judge(window_title, "in front")]
         if lands_at_a_point(decision):
@@ -82,6 +77,18 @@ class Policy:
         if self.settings.confirm == "risky" and lands_at_a_point(decision):
             return Verdict(ALLOW)
         return Verdict(CONFIRM)
+
+    def key_refusal(self, decision: Decision) -> str:
+        """Why NEXUS Live never presses ``decision``'s keys, in any window; "" when it may."""
+        keys = set(decision.keys)
+        if keys & SYSTEM_KEYS:
+            return "I don't use the Windows key: it opens the Run box and system menus."
+        if any(combo <= keys for combo in SYSTEM_COMBOS):
+            return "I don't press system key combinations like that one."
+        if any(combo <= keys for combo in self.own_hotkeys):
+            # It would answer my own question, stop me, or start recording whatever is said nearby.
+            return "That is one of my own hotkeys, so I don't press it."
+        return ""
 
     def _judge(self, title: str | None, where: str) -> Verdict | None:
         """A refusal, or a question, for a window that rules a step out or cannot be checked; None when it is fine."""

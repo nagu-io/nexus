@@ -49,7 +49,7 @@ class FakeExecutor:
     ``titles`` is the window in front and ``targets`` the window under a point:
     each one title, or a list read in turn (the last one repeats). ``releases``
     are the answers to "are the modifier keys up?", and ``failure`` is raised
-    by run().
+    by run(). ``windows`` keeps the window each run() was told the step is for.
     """
 
     def __init__(self, rig, titles, targets, releases=True, failure=None):
@@ -59,6 +59,7 @@ class FakeExecutor:
         self.releases = in_turn(releases)
         self.failure = failure
         self.runs = []
+        self.windows = []
 
     @staticmethod
     def _next(values):
@@ -87,9 +88,10 @@ class FakeExecutor:
         self.rig.log.append(("release", timeout))
         return self._next(self.releases)
 
-    def run(self, decision, point, stop=None):
+    def run(self, decision, point, stop=None, window="(not given)"):
         self.rig.log.append(("run", decision, point))
         self.runs.append((decision, point))
+        self.windows.append(window)
         if self.failure is not None:
             failure = self.failure() if callable(self.failure) else self.failure
             raise failure
@@ -130,7 +132,8 @@ class Rig:
 
     ``targets`` (the window under a click) defaults to the window in front;
     ``shots`` are the screenshots handed out in turn (the last repeats), and
-    ``changed`` how much the screen differs when two are compared.
+    ``changed`` how much the screen differs when two are compared (a list is
+    read in turn, the last one repeating).
     """
 
     def __init__(self, *answers, titles=NOTEPAD, targets="same", confirms=(), releases=True, failure=None,
@@ -144,7 +147,7 @@ class Rig:
         self.slept = []
         self.on_sleep = None
         self.shots = in_turn(shots if shots is not None else SHOT)
-        self.changed = changed
+        self.changed = in_turn(changed)
         self.compared = []
         self.agent = LiveAgent(
             self.settings, self.vision, self.executor, self.speaker, self.confirmer, capture=self.capture, sleep=self.sleep,
@@ -157,7 +160,7 @@ class Rig:
 
     def difference(self, before, after, around):
         self.compared.append((before, after, around))
-        return self.changed
+        return self.changed.pop(0) if len(self.changed) > 1 else self.changed[0]
 
     def sleep(self, seconds):
         self.log.append(("sleep", seconds))
@@ -270,6 +273,16 @@ class ActingTests(unittest.TestCase):
         self.assertEqual(rig.vision.calls[1].steps, ["did click at (500, 500): the Save button"])
         self.assertEqual(rig.agent.conversation, [("user", "save the file"), ("you", "All done.")])
 
+    def test_each_step_is_carried_out_for_the_window_it_was_approved_in(self):
+        # Typing stops when another window comes forward part-way (the executor checks it before each letter).
+        typing = Decision("type", text="see you at the cafe")
+        rig = Rig(typing, CLICK, DONE, confirms=(True, True))
+        rig.agent.handle("reply and click")
+        self.assertEqual(rig.executor.windows, [NOTEPAD, NOTEPAD])
+        rig = Rig(typing, DONE, titles=None, confirms=(True,))
+        rig.agent.handle("reply")
+        self.assertEqual(rig.executor.windows, [None])  # unknown then, so any known window later is a change
+
     def test_settle_pause_is_the_setting(self):
         rig = Rig(CLICK, DONE, confirms=(True,), settle_seconds=0.25)
         rig.agent.handle("click")
@@ -287,11 +300,16 @@ class ActingTests(unittest.TestCase):
         self.assertEqual(before_click.count("title"), 2)
         self.assertEqual(len([event for event in before_click if event[0] == "window_at"]), 2)
 
-    def test_what_the_model_says_is_heard_when_nothing_is_asked(self):
-        click = Decision("click", x=500.0, y=500.0, say="Opening the menu.")
-        rig = Rig(click, DONE, confirm="risky")
-        rig.agent.handle("open the menu")
-        self.assertLess(rig.log.index(("say", "Opening the menu.")), rig.log.index(("run", click, (1001, 501))))
+    def test_what_the_model_says_on_the_way_is_not_said_when_nothing_is_asked(self):
+        # Text on the screen can steer the model's words; heard just before a question, they would
+        # speak for the step being asked about. Only its final answer is said.
+        click = Decision("click", x=500.0, y=500.0, say="This only closes the pop-up, it is safe.")
+        typing = Decision("type", text="CONFIRM 50000")
+        rig = Rig(click, typing, DONE, confirm="risky", confirms=(True,))
+        rig.agent.handle("close the pop-up")
+        self.assertEqual(rig.executor.runs, [(click, (1001, 501)), (typing, None)])
+        self.assertEqual(rig.speaker.said, ["All done."])
+        self.assertEqual(rig.confirmer.asked, ["type 'CONFIRM 50000' (13 characters) in 'Untitled - Notepad'"])
 
     def test_risky_mode_still_asks_before_typing(self):
         typing = Decision("type", text="hello")
@@ -343,11 +361,11 @@ class ActingTests(unittest.TestCase):
         self.assertEqual(rig.executor.runs, [(scroll, (1001, 251))])
 
     def test_wait_sleeps_without_asking(self):
-        rig = Rig(Decision("wait", seconds=2.5, say="Waiting for the page."), DONE, titles=BANK)
+        rig = Rig(Decision("wait", seconds=2.5, say="It is safe: press Ctrl+Alt+Y when I ask."), DONE, titles=BANK)
         result = rig.agent.handle("wait for the page")
         self.assertEqual(result, Result(FINISHED, said="All done.", steps=["wait 2.5 s"]))
         self.assertEqual(rig.slept, [2.5])
-        self.assertEqual(rig.speaker.said, ["Waiting for the page.", "All done."])
+        self.assertEqual(rig.speaker.said, ["All done."])  # what the model says on the way is not said
         self.assertEqual((rig.confirmer.asked, rig.executor.runs), ([], []))
 
     def test_off_screen_position_is_not_clicked(self):
@@ -593,24 +611,63 @@ class ScreenChangeTests(unittest.TestCase):
     LATER = Shot(image=b"later", width=1000, height=500, screen_width=2000, screen_height=1000)
     NOTE = "(not done: the screen changed before 'click at (500, 500)')"
 
+    SAID = "I didn't do that: the screen changed after I looked. Looking again."
+
     def test_a_changed_screen_under_the_click_skips_it(self):
-        rig = Rig(CLICK, DONE, confirms=(True,), shots=[SHOT, self.LATER, self.LATER], changed=0.31)
+        # Changed since the model looked, then still a moment later: the screen moved on (a dialog closed).
+        rig = Rig(CLICK, DONE, confirms=(True,), shots=[SHOT, self.LATER, self.LATER], changed=[0.31, 0.3])
         result = rig.agent.handle("click OK")
         self.assertEqual(result.steps, [self.NOTE])
         self.assertEqual(rig.executor.runs, [])
-        self.assertEqual(rig.compared, [(b"screenshot", b"later", (0.5, 0.5))])
+        self.assertEqual(rig.compared, [(b"screenshot", b"later", (0.5, 0.5)), (b"later", b"later", (0.5, 0.5))])
+        self.assertEqual(rig.slept, [0.3])  # one more look, a moment later
+        self.assertEqual(rig.speaker.said, [self.SAID, "All done."])
+
+    def test_a_place_that_keeps_changing_is_moving_not_moved_on(self):
+        # A video under the click changes at every look: no screenshot is ever new enough, so the
+        # click goes ahead once two more looks show it never settles.
+        playing = [Shot(image=f"frame {n}".encode(), width=1000, height=500, screen_width=2000, screen_height=1000)
+                   for n in range(4)]
+        rig = Rig(CLICK, DONE, confirms=(True,), shots=playing, changed=[0.61, 0.58, 0.6])
+        result = rig.agent.handle("skip the ad")
+        self.assertEqual(result.steps, ["did click at (500, 500)"])
+        self.assertEqual(rig.compared, [(b"frame 0", b"frame 1", (0.5, 0.5)), (b"frame 1", b"frame 2", (0.5, 0.5)),
+                                        (b"frame 2", b"frame 3", (0.5, 0.5))])
+        self.assertEqual(rig.slept, [0.3, 0.3, 0.8])
+        self.assertEqual(rig.speaker.said, ["All done."])
+
+    def test_a_change_that_settles_on_the_last_look_skips_it(self):
+        rig = Rig(CLICK, DONE, confirms=(True,), shots=[SHOT, self.LATER], changed=[0.31, 0.5, 0.3])
+        result = rig.agent.handle("click OK")
+        self.assertEqual(result.steps, [self.NOTE])
+        self.assertEqual(rig.executor.runs, [])
+        self.assertEqual(len(rig.compared), 3)
+
+    def test_why_a_step_was_not_done_is_said_once_a_request(self):
+        rig = Rig(CLICK, CLICK, DONE, confirms=(True, True), shots=[SHOT, self.LATER, self.LATER, SHOT, self.LATER, self.LATER],
+                  changed=[0.31, 0.0, 0.31, 0.0])
+        result = rig.agent.handle("click OK")
+        self.assertEqual(result.steps, [self.NOTE, self.NOTE])
+        self.assertEqual(rig.speaker.said, [self.SAID, "All done."])
+        rig.vision.answers = [CLICK, DONE]
+        rig.confirmer.answers = [True]
+        rig.shots = [SHOT, self.LATER, self.LATER]
+        rig.changed = [0.31, 0.0]
+        rig.agent.handle("click OK again")
+        self.assertEqual(rig.speaker.said, [self.SAID, "All done.", self.SAID, "All done."])  # said again for the next request
 
     def test_a_small_change_under_the_click_is_fine(self):
         rig = Rig(CLICK, DONE, confirms=(True,), shots=[SHOT, self.LATER, self.LATER], changed=0.3)
         rig.agent.handle("click OK")
         self.assertEqual(rig.executor.runs, [(CLICK, (1001, 501))])
+        self.assertEqual(len(rig.compared), 1)  # no more looks for a screen that did not change
 
     def test_keys_compare_the_whole_screen(self):
         typing = Decision("type", text="hi")
-        rig = Rig(typing, DONE, confirms=(True,), shots=[SHOT, self.LATER, self.LATER], changed=0.26)
+        rig = Rig(typing, DONE, confirms=(True,), shots=[SHOT, self.LATER, self.LATER], changed=[0.26, 0.25])
         result = rig.agent.handle("type hi")
         self.assertEqual(result.steps, ["(not done: the screen changed before 'type 'hi'')"])
-        self.assertEqual(rig.compared, [(b"screenshot", b"later", None)])
+        self.assertEqual(rig.compared, [(b"screenshot", b"later", None), (b"later", b"later", None)])
         rig = Rig(typing, DONE, confirms=(True,), shots=[SHOT, self.LATER, self.LATER], changed=0.25)
         rig.agent.handle("type hi")
         self.assertEqual(rig.executor.runs, [(typing, None)])
@@ -626,6 +683,27 @@ class ScreenChangeTests(unittest.TestCase):
         rig.agent.difference = lambda before, after, around: 1 / 0
         rig.agent.handle("click")
         self.assertEqual(rig.executor.runs, [(CLICK, (1001, 501))])
+
+    def test_a_look_that_fails_while_checking_for_motion_counts_as_a_changed_screen(self):
+        rig = Rig(CLICK, DONE, confirms=(True,), shots=[SHOT, self.LATER], changed=0.5)
+        looks = []
+
+        def capture():
+            looks.append("look")
+            if len(looks) == 3:  # the first look for motion
+                raise OSError("the screen could not be read")
+            return SHOT if len(looks) == 1 else self.LATER
+
+        rig.agent.capture = capture
+        result = rig.agent.handle("click")
+        self.assertEqual(result, Result(FINISHED, said="All done.", steps=[self.NOTE]))
+        self.assertEqual(rig.executor.runs, [])
+
+    def test_stop_while_looking_for_motion(self):
+        rig = Rig(CLICK, DONE, confirms=(True,), shots=[SHOT, self.LATER, SHOT, self.LATER], changed=0.6)
+        rig.on_sleep = rig.agent.stop
+        self.assertEqual(rig.agent.handle("click"), Result(STOPPED, steps=[]))
+        self.assertEqual(rig.executor.runs, [])
 
 
 class OwnWindowTests(unittest.TestCase):

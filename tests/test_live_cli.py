@@ -80,6 +80,14 @@ class PullTests(unittest.TestCase):
             self.assertIsNone(downloads[1][1])  # into the Hugging Face cache, where loading looks
             self.assertIn("downloading that too", result.output)
 
+    def test_a_folder_with_other_things_in_it_is_refused_with_its_reason(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "notes.txt").write_text("mine")
+            downloads = []
+            result = self.pull("me/merged", Path(root), downloads)
+            self.assertIn("has other things in it and no model", " ".join(result.output.split()))
+            self.assertEqual(((Path(root) / "notes.txt").read_text(), downloads), ("mine", []))
+
     def test_a_merged_model_needs_nothing_more(self):
         with tempfile.TemporaryDirectory() as root:
             downloads = []

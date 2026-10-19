@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from nexus.live import app
-from nexus.live.local import MODEL_CARD, LocalVision, ModelCard, card_problem, read_card
+from nexus.live.local import MODEL_CARD, PULL_MARK, LocalVision, ModelCard, card_problem, pull_model, read_card
 from nexus.live.model import PROMPT_VERSION, LlamaCppVision, ModelUnavailable, OllamaVision
 from nexus.live.settings import LiveSettings
 
@@ -198,6 +198,164 @@ class ChecksTests(unittest.TestCase):
             lines = app.checks(settings)
         server = [line for line in lines if line[1] == "llama-server"]
         self.assertEqual(server[0][0], "error")
+
+
+class FakeDownload:
+    """snapshot_download into a folder: writes the repo's files, or fails part-way when told to."""
+
+    def __init__(self, files, fail=False):
+        self.files = files
+        self.fail = fail
+        self.calls = []
+        self.found = []  # what was already in the download folder at each call
+
+    def __call__(self, repo, local_dir, ignore_patterns):
+        folder = Path(local_dir)
+        self.calls.append(repo)
+        self.found.append(sorted(path.name for path in folder.iterdir()))
+        for index, (name, content) in enumerate(self.files.items()):
+            (folder / name).write_text(content)
+            if self.fail and index == 0:
+                raise ConnectionError("the connection dropped")
+
+
+MERGED = {"config.json": "{}", "model.safetensors": "new weights"}
+
+
+def names(folder: Path) -> list[str]:
+    return sorted(path.name for path in folder.iterdir()) if folder.exists() else []
+
+
+class PullTests(unittest.TestCase):
+    """`nexus vision pull`: a complete download replaces the model whole, and nothing else is ever lost."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
+        self.folder = self.root / "nexus_vision"
+
+    def old_adapter(self):
+        self.folder.mkdir()
+        (self.folder / "adapter_config.json").write_text("{}")
+        (self.folder / "adapter_model.safetensors").write_text("old weights")
+
+    def test_a_new_model_replaces_the_old_one_whole(self):
+        self.old_adapter()
+        pull_model("me/merged", self.folder, FakeDownload(MERGED))
+        self.assertEqual(names(self.folder), ["config.json", "model.safetensors"])
+        self.assertEqual(names(self.root), ["nexus_vision"])  # no download or backup folder left behind
+
+    def test_into_a_new_or_empty_folder(self):
+        pull_model("me/merged", self.folder, FakeDownload(MERGED))
+        self.assertEqual(names(self.folder), ["config.json", "model.safetensors"])
+        other = self.root / "empty"
+        other.mkdir()
+        pull_model("me/merged", other, FakeDownload(MERGED))
+        self.assertEqual(names(other), ["config.json", "model.safetensors"])
+
+    def test_a_folder_with_other_things_in_it_is_left_alone(self):
+        models = self.root / "models"
+        (models / "llama").mkdir(parents=True)
+        (models / "notes.txt").write_text("mine")
+        download = FakeDownload(MERGED)
+        with self.assertRaisesRegex(ValueError, "has other things in it and no model"):
+            pull_model("me/merged", models, download)
+        self.assertEqual((names(models), download.calls), (["llama", "notes.txt"], []))
+
+    def test_what_is_left_of_a_model_is_still_a_model_folder(self):
+        # An older pull that stopped part-way, or a download folder of the Hub's.
+        for leftover in ("adapter_model.safetensors", "tokenizer.json", ".cache/huggingface/download/x.lock"):
+            with self.subTest(leftover=leftover):
+                folder = self.root / leftover.replace("/", "_")
+                (folder / leftover).parent.mkdir(parents=True, exist_ok=True)
+                (folder / leftover).write_text("partial")
+                pull_model("me/merged", folder, FakeDownload(MERGED))
+                self.assertEqual(names(folder), ["config.json", "model.safetensors"])
+
+    def test_a_file_is_left_alone(self):
+        target = self.root / "nexus_vision"
+        target.write_text("not a folder")
+        with self.assertRaisesRegex(ValueError, "is a file"):
+            pull_model("me/merged", target, FakeDownload(MERGED))
+        self.assertEqual(target.read_text(), "not a folder")
+
+    def test_a_backup_of_the_user_s_own_is_never_touched(self):
+        self.old_adapter()
+        mine = self.root / "nexus_vision.old"
+        mine.mkdir()
+        (mine / "adapter_config.json").write_text("my backup")
+        pull_model("me/merged", self.folder, FakeDownload(MERGED))
+        self.assertEqual((mine / "adapter_config.json").read_text(), "my backup")
+
+    def test_a_download_that_stops_leaves_the_old_model_and_resumes_next_time(self):
+        self.old_adapter()
+        with self.assertRaises(ConnectionError):
+            pull_model("me/merged", self.folder, FakeDownload(MERGED, fail=True))
+        self.assertEqual(names(self.folder), ["adapter_config.json", "adapter_model.safetensors"])
+        again = FakeDownload(MERGED)
+        pull_model("me/merged", self.folder, again)
+        self.assertEqual(again.found, [[PULL_MARK, "config.json"]])  # what was downloaded before is still there
+        self.assertEqual(names(self.folder), ["config.json", "model.safetensors"])
+
+    def test_a_download_of_another_repo_starts_again(self):
+        with self.assertRaises(ConnectionError):
+            pull_model("me/other", self.folder, FakeDownload({"stale.bin": "x", "more.bin": "y"}, fail=True))
+        download = FakeDownload(MERGED)
+        pull_model("me/merged", self.folder, download)
+        self.assertEqual(download.found, [[PULL_MARK]])
+        self.assertEqual(names(self.folder), ["config.json", "model.safetensors"])
+
+    def test_if_the_new_model_cannot_be_moved_in_the_old_one_is_put_back(self):
+        self.old_adapter()
+        real_rename = Path.rename
+
+        def rename(source, target):
+            if source.name.endswith(".download"):
+                raise PermissionError("a virus scan has a file open")
+            return real_rename(source, target)
+
+        with mock.patch.object(Path, "rename", rename):
+            with self.assertRaises(PermissionError):
+                pull_model("me/merged", self.folder, FakeDownload(MERGED), sleep=lambda seconds: None)
+        self.assertEqual(names(self.folder), ["adapter_config.json", "adapter_model.safetensors"])
+        self.assertEqual(names(self.root), [".nexus_vision.download", "nexus_vision"])  # kept, to move in next time
+        again = FakeDownload(MERGED)
+        pull_model("me/merged", self.folder, again)
+        self.assertEqual(again.found, [[PULL_MARK, "config.json", "model.safetensors"]])
+        self.assertEqual(names(self.folder), ["config.json", "model.safetensors"])
+
+    def test_a_file_held_open_for_a_moment_is_waited_out(self):
+        self.old_adapter()
+        real_rename = Path.rename
+        failures = [PermissionError("in use"), PermissionError("in use")]
+        slept = []
+
+        def rename(source, target):
+            if source.name.endswith(".download") and failures:
+                raise failures.pop(0)
+            return real_rename(source, target)
+
+        with mock.patch.object(Path, "rename", rename):
+            pull_model("me/merged", self.folder, FakeDownload(MERGED), sleep=slept.append)
+        self.assertEqual(slept, [0.5, 0.5])
+        self.assertEqual(names(self.folder), ["config.json", "model.safetensors"])
+
+    def test_other_rename_errors_are_not_retried(self):
+        self.old_adapter()
+        calls = []
+        real_rename = Path.rename
+
+        def rename(source, target):
+            if source.name.endswith(".download"):
+                calls.append(source)
+                raise OSError("the disk is full")
+            return real_rename(source, target)
+
+        with mock.patch.object(Path, "rename", rename):
+            with self.assertRaisesRegex(OSError, "the disk is full"):
+                pull_model("me/merged", self.folder, FakeDownload(MERGED), sleep=lambda seconds: None)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(names(self.folder), ["adapter_config.json", "adapter_model.safetensors"])
 
 
 if __name__ == "__main__":

@@ -203,14 +203,14 @@ def desktop_lines(
         lines.append(("warn", "Windows on the screen", "cannot be read: teach mode cannot black out private windows in its screenshots"))
     else:
         lines.append(("ok", "Windows on the screen", f"{len(windows)} can be seen"))
-    named = [(name, box) for name, box in windows or [] if name]
+    named = [window for window in windows or [] if window.title]
     if named:
-        name, (left, top, right, bottom) = named[0]
+        left, top, right, bottom = named[0].box
         seen = under(((left + right) // 2, (top + bottom) // 2))
         if seen is None:
             lines.append(("warn", "Window under a click", "cannot be told: with confirm=risky, clicks are asked about too"))
         else:
-            lines.append(("ok", "Window under a click", f"the middle of {name!r} reads as {seen!r}"))
+            lines.append(("ok", "Window under a click", f"the middle of {named[0].title!r} reads as {seen!r}"))
     keys = held()
     if keys is None:
         lines.append(("warn", "Keys held down", "cannot be read: after each yes it waits half a second for your hand to come off the keys"))
@@ -263,9 +263,10 @@ class LiveSession:
             self.talk_requested.set()
 
     def on_stop(self) -> None:
-        # Also cancels a request still being spoken: listen_loop drops it (see there).
+        # Also cancels a request still being spoken (listen_loop drops it), and a question waiting for an answer.
         self.recording_stop.set()
         self.agent.stop()
+        self.confirmer.cancel()
         self.print("NEXUS: stopped.")
 
     def note_console(self) -> None:
@@ -338,12 +339,19 @@ class LiveSession:
             self.print("(listening... press the talk key again, or stop talking)")
             try:
                 audio = recorder.record(self.recording_stop)
+            except Exception as error:  # a microphone that fails ends this request, never voice mode
+                self.speaker.say(f"I couldn't record that ({type(error).__name__}: {error}).")
+                continue
             finally:
                 self.recording.clear()
             if self.agent.stop_event.is_set():
                 self.print("(dropped what you said)")
                 continue
-            text = transcriber.transcribe(audio)
+            try:
+                text = transcriber.transcribe(audio)
+            except Exception as error:
+                self.speaker.say(f"I couldn't make out what you said ({type(error).__name__}: {error}).")
+                continue
             if self.agent.stop_event.is_set():
                 self.print("(dropped what you said)")
                 continue

@@ -11,10 +11,13 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shutil
 import threading
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from nexus.live.model import PROMPT_VERSION, ModelUnavailable, VisionModel, chat_messages
 
@@ -74,6 +77,79 @@ def card_problem(model_dir: Path, coordinates: str) -> str | None:
     if card.coordinates != coordinates:
         return f"The model in {model_dir} gives {card.coordinates} positions; set NEXUS_LIVE_COORDINATES={card.coordinates}."
     return None
+
+
+# Files that make a folder a model folder: an adapter, a whole model, NEXUS Vision's card, or what is left of
+# any of them (a download that stopped part-way leaves some files and not others).
+MODEL_FILES = (
+    "adapter_config.json", "adapter_model.safetensors", "config.json", "model.safetensors",
+    "model.safetensors.index.json", "tokenizer.json", "tokenizer_config.json", "processor_config.json",
+    "preprocessor_config.json", "chat_template.jinja", MODEL_CARD, ".cache/huggingface",
+)
+PULL_MARK = ".nexus-pull"  # in a download folder: the repo it is a download of
+
+
+def is_model_folder(folder: Path) -> bool:
+    return any((Path(folder) / name).exists() for name in MODEL_FILES)
+
+
+def pull_model(
+    repo: str,
+    folder: Path,
+    download: Callable[..., Any],
+    retries: int = 5,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Path:
+    """Download ``repo`` and put it in ``folder``, in place of the model there, all at once.
+
+    It goes into a download folder beside ``folder`` (kept until it is moved in,
+    so a download that stops picks up where it was at the next try), and only a
+    complete download replaces the old model, whole: downloading over it left
+    an adapter's files next to a merged model's, and the old adapter kept
+    loading. If moving the new one in fails, the old one is put back. A folder
+    that holds other things and no model is refused rather than emptied.
+    """
+    folder = Path(folder).expanduser()
+    if folder.exists() and not folder.is_dir():
+        raise ValueError(f"{folder} is a file, not a folder, so it was left alone.")
+    if folder.exists() and any(folder.iterdir()) and not is_model_folder(folder):
+        raise ValueError(
+            f"{folder} has other things in it and no model, so it was left alone. Give an empty folder, "
+            "or the folder NEXUS Vision is in."
+        )
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    staging = folder.with_name(f".{folder.name}.download")
+    mark = staging / PULL_MARK
+    if staging.exists() and not (mark.is_file() and mark.read_text(encoding="utf-8").strip() == repo):
+        shutil.rmtree(staging)  # a download of something else: start again
+    staging.mkdir(parents=True, exist_ok=True)
+    mark.write_text(repo, encoding="utf-8")
+    download(repo, local_dir=str(staging), ignore_patterns=["checkpoints/*"])
+    previous = None
+    if folder.exists():
+        previous = folder.with_name(f".{folder.name}.old-{uuid.uuid4().hex[:8]}")
+        _rename(folder, previous, retries, sleep)
+    try:
+        _rename(staging, folder, retries, sleep)
+    except OSError:
+        if previous is not None:
+            _rename(previous, folder, retries, sleep)  # the old model back where it was
+        raise
+    (folder / PULL_MARK).unlink(missing_ok=True)
+    if previous is not None:
+        shutil.rmtree(previous, ignore_errors=True)
+    return folder
+
+
+def _rename(source: Path, target: Path, retries: int, sleep: Callable[[float], None]) -> None:
+    for attempt in range(retries):
+        try:
+            source.rename(target)
+            return
+        except PermissionError:  # on Windows a file just written can still be open (a virus scan, the indexer)
+            if attempt == retries - 1:
+                raise
+            sleep(0.5)
 
 
 def _want_4bit(setting: str) -> bool:

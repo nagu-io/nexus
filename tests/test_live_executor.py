@@ -6,13 +6,13 @@ import platform
 import sys
 import threading
 import unittest
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import nexus.live.executor as executor_module
 from nexus.live.executor import WHEEL_NOTCH, Executor, Interrupted
 from nexus.live.model import Decision
-from nexus.live.screen import Shot
+from nexus.live.screen import Shot, Window
 
 # A 1920 by 1080 monitor, seen by the model as 1280 by 720.
 SHOT = Shot(image=b"png", width=1280, height=720, screen_width=1920, screen_height=1080)
@@ -348,6 +348,183 @@ class TypingTests(unittest.TestCase):
         executor = self.make(keys=Keys(None))
         executor.run(Decision("type", text="ok"), None)
         self.assertEqual(len(self.backend.calls), 2)
+
+    def test_another_window_coming_forward_stops_the_typing(self):
+        # Approved for Notepad: what is left of the text never reaches the window that came forward.
+        titles = Keys("Untitled - Notepad", "Untitled - Notepad", "Database.kdbx - KeePass")
+        executor = self.make(title_reader=titles)
+        with self.assertRaisesRegex(Interrupted, "the window in front changed"):
+            executor.run(Decision("type", text="see you"), None, window="Untitled - Notepad")
+        self.assertEqual(self.backend.calls, [("write", "s", None), ("write", "e", None)])
+        self.assertEqual(titles.reads, 3)  # before every letter
+
+    def test_the_window_is_checked_before_characters_and_pastes_too(self):
+        for system, text in (("Windows", "నమస్తే"), ("Linux", "café")):
+            with self.subTest(system=system):
+                executor = self.make(system=system, title_reader=lambda: "Database.kdbx - KeePass")
+                with self.assertRaisesRegex(Interrupted, "the window in front changed"):
+                    executor.run(Decision("type", text=text), None, window="Untitled - Notepad")
+                self.assertEqual(self.backend.calls, [])
+
+    def test_the_same_window_types_everything(self):
+        executor = self.make(title_reader=lambda: "Untitled - Notepad")
+        executor.run(Decision("type", text="a€b"), None, window="Untitled - Notepad")
+        self.assertEqual(self.backend.calls, [("write", "a", None), ("unicode", "€"), ("write", "b", None)])
+
+    def test_a_title_that_becomes_readable_is_a_change(self):
+        unknown = self.make(title_reader=lambda: None)
+        unknown.run(Decision("type", text="ok"), None, window=None)
+        self.assertEqual(len(self.backend.calls), 2)
+        named = self.make(title_reader=lambda: "Command Prompt")
+        with self.assertRaises(Interrupted):
+            named.run(Decision("type", text="ok"), None, window=None)
+
+    def test_with_no_window_given_none_is_read(self):
+        def never():
+            raise AssertionError("the window was read")
+
+        executor = self.make(title_reader=never)
+        executor.run(Decision("type", text="ok"), None)
+        self.assertEqual(len(self.backend.calls), 2)
+
+
+DOWN = -32768  # GetAsyncKeyState's answer, a signed short, for a key that is down
+
+
+class FakeKeyState:
+    def __init__(self, *codes):
+        self.codes = set(codes)
+
+    def GetAsyncKeyState(self, code):
+        return DOWN if code in self.codes else 0
+
+
+class HotkeyModifierTests(unittest.TestCase):
+    """The hotkeys' Alt is the left Alt: the right one is AltGr on many keyboards, reported as Ctrl and Alt."""
+
+    def held(self, *codes):
+        with patch.object(executor_module, "_user32", return_value=FakeKeyState(*codes)):
+            return executor_module.hotkey_modifiers()
+
+    def test_the_left_ctrl_and_alt(self):
+        self.assertEqual(self.held(0x11, 0xA2, 0x12, 0xA4), frozenset({"ctrl", "alt"}))
+
+    def test_altgr_is_not_the_hotkeys_ctrl_and_alt(self):
+        # AltGr: Windows adds a left Ctrl of its own to the right Alt.
+        self.assertEqual(self.held(0x11, 0xA2, 0x12, 0xA5), frozenset({"ctrl"}))
+        self.assertEqual(self.held(0x11, 0xA2, 0x12, 0xA4, 0xA5), frozenset({"ctrl"}))  # both Alts: AltGr is in it
+
+    def test_the_other_modifiers(self):
+        self.assertEqual(self.held(0x10, 0x12, 0xA4), frozenset({"shift", "alt"}))
+        self.assertEqual(self.held(0x5C), frozenset({"win"}))
+        self.assertEqual(self.held(), frozenset())
+
+    def test_none_where_the_keyboard_cannot_be_read(self):
+        with patch.object(executor_module, "_user32", side_effect=OSError("no user32 here")):
+            self.assertIsNone(executor_module.hotkey_modifiers())
+
+
+class FakeWindows:
+    """user32 and dwmapi as _windows_layout uses them, over a list of windows, the top one first.
+
+    Each window is a dict: title, rect, pid, and the flags hidden, minimized,
+    cloaked, no_frame (the DWM cannot give its bounds), broken (reading it fails).
+    """
+
+    def __init__(self, windows, front):
+        self.windows = {index + 1: window for index, window in enumerate(windows)}
+        self.front = front
+
+    # user32
+    def GetForegroundWindow(self):
+        return self.front
+
+    def EnumWindows(self, callback, _):
+        for handle in self.windows:
+            if not callback(handle, None):
+                break
+        return True
+
+    def IsWindowVisible(self, handle):
+        return not self.windows[handle].get("hidden")
+
+    def IsIconic(self, handle):
+        return bool(self.windows[handle].get("minimized"))
+
+    def GetWindowRect(self, handle, rect):
+        self._fill(rect, self.windows[handle]["rect"])
+        return True
+
+    def GetWindowTextLengthW(self, handle):
+        if self.windows[handle].get("broken"):
+            raise OSError("access denied")
+        return len(self.windows[handle].get("title", ""))
+
+    def GetWindowTextW(self, handle, buffer, size):
+        buffer.value = self.windows[handle].get("title", "")[: size - 1]
+        return len(buffer.value)
+
+    def GetWindowThreadProcessId(self, handle, process):
+        process._obj.value = self.windows[handle].get("pid", 0)
+        return 1
+
+    # dwmapi
+    def DwmGetWindowAttribute(self, handle, attribute, target, size):
+        window = self.windows[handle]
+        if attribute == executor_module.DWMWA_CLOAKED:
+            target._obj.value = 1 if window.get("cloaked") else 0
+            return 0
+        if window.get("no_frame"):
+            return -2147024809  # E_INVALIDARG
+        self._fill(target, window["rect"])
+        return 0
+
+    @staticmethod
+    def _fill(pointer, box):
+        rect = pointer._obj if hasattr(pointer, "_obj") else pointer.contents
+        rect.left, rect.top, rect.right, rect.bottom = box
+
+
+class WindowsLayoutTests(unittest.TestCase):
+    def layout(self, windows, front=1):
+        fake = FakeWindows(windows, front)
+        dwmapi = SimpleNamespace(DwmGetWindowAttribute=lambda *args: fake.DwmGetWindowAttribute(*args))  # takes argtypes
+        with patch.object(executor_module, "_user32", return_value=fake), \
+             patch.object(ctypes, "WinDLL", return_value=dwmapi, create=True), \
+             patch.object(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE, create=True):
+            return executor_module._windows_layout()
+
+    def test_the_windows_on_the_screen_top_first(self):
+        windows = [
+            {"title": "Untitled - Notepad", "rect": (0, 0, 800, 600), "pid": 100},
+            {"title": "Hidden", "rect": (0, 0, 10, 10), "pid": 1, "hidden": True},
+            {"title": "Minimized", "rect": (0, 0, 10, 10), "pid": 1, "minimized": True},
+            {"title": "On another desktop", "rect": (0, 0, 10, 10), "pid": 1, "cloaked": True},
+            {"title": "Database.kdbx - KeePass", "rect": (700, 0, 1920, 1080), "pid": 200, "no_frame": True},
+            {"title": "No size", "rect": (5, 5, 5, 50), "pid": 1},
+            {"title": "", "rect": (10, 10, 60, 30), "pid": 200},
+            {"title": "Program Manager", "rect": (0, 0, 1920, 1080), "pid": 0},
+        ]
+        self.assertEqual(self.layout(windows), [
+            Window("Untitled - Notepad", (0, 0, 800, 600), 100, True),
+            Window("Database.kdbx - KeePass", (700, 0, 1920, 1080), 200, False),
+            Window(None, (10, 10, 60, 30), 200, False),
+            Window("Program Manager", (0, 0, 1920, 1080), None, False),
+        ])
+
+    def test_no_window_in_front(self):
+        self.assertEqual(self.layout([{"title": "Notepad", "rect": (0, 0, 9, 9), "pid": 7}], front=None),
+                         [Window("Notepad", (0, 0, 9, 9), 7, False)])
+
+    def test_a_window_that_cannot_be_read_fails_the_whole_layout(self):
+        # Leaving it out could leave a blocked window uncovered: teach mode then uses no screenshot.
+        windows = [{"title": "Notepad", "rect": (0, 0, 9, 9), "pid": 7}, {"title": "KeePass", "rect": (0, 0, 9, 9), "broken": True},
+                   {"title": "Calculator", "rect": (0, 0, 9, 9), "pid": 8}]
+        with self.assertRaisesRegex(OSError, "access denied"):
+            self.layout(windows)
+        with patch.object(executor_module, "_windows_layout", side_effect=OSError("access denied")), \
+             patch.object(executor_module.platform, "system", return_value="Windows"):
+            self.assertIsNone(executor_module.window_layout())
 
 
 class UnicodeInputTests(unittest.TestCase):

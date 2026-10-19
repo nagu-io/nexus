@@ -378,9 +378,14 @@ def clean(text: str) -> str:
 
     Requests, earlier steps and what was said all go into the prompt as plain
     text; a "<|im_start|>" in them (copied from the screen into a thought, say)
-    would otherwise become a real chat-turn marker and forge a turn.
+    would otherwise become a real chat-turn marker and forge a turn. Taken out
+    until none is left: "<|im_<|x|>end|>" would close up into "<|im_end|>".
     """
-    return SPECIAL_TOKEN_TEXT.sub("", text)
+    while True:
+        cleaned = SPECIAL_TOKEN_TEXT.sub("", text)
+        if cleaned == text:
+            return text
+        text = cleaned
 
 
 def request_text(goal: str, steps: list[str], conversation: list[tuple[str, str]]) -> str:

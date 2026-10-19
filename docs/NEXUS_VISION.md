@@ -33,16 +33,22 @@ finishes. Each step is saved with the screenshot from just before it, in
 Before a session is saved you are shown everything you typed, and you can leave any
 of it out. Nothing is recorded in password managers, banking, payment and terminal
 windows (the same blocked list NEXUS Live uses), in teach mode's own console, or in
-a window whose title cannot be read. Wherever such a window shows on the screen,
-it is blacked out in the screenshots (on Windows and Linux; a Mac cannot say where
-its windows are, so close private windows there before teaching). Do not type
-passwords while teaching anyway.
+a window whose title cannot be read, whether it is in front or under a click.
+Wherever such a window shows on the screen, it is blacked out in the screenshots,
+whole, together with its program's other windows (its pop-ups, lists and dialogs);
+only the window you are working in, in front, shows over it, since any other window
+on top could be see-through (an overlay, a screen recorder's frame). A screenshot
+taken when the windows on the screen could not be read is not used. All of this is
+on Windows and Linux; a Mac cannot say where its windows are, so close private
+windows there before teaching. Do not type passwords while teaching anyway.
 
-Keys NEXUS Live never presses (the Windows key, Caps Lock, Print Screen, the volume
-keys) are not saved as steps, and characters made with AltGr count as typing. A step
-taken so soon after the one before that no screenshot shows its effect, or a click
-with Ctrl or Shift held, is not an example of its own, but the examples after it
-still list it among the steps already taken.
+The Windows key, Caps Lock, Print Screen and the volume keys are not saved as steps,
+and characters made with AltGr count as typing. A step taken so soon after the one
+before that no screenshot shows its effect, a click with Ctrl or Shift held, or a
+combination NEXUS Live refuses to press (Ctrl+Esc, Ctrl+Shift+Esc) is not an example
+of its own, but the examples after it still list it among the steps already taken.
+A key whose release teach mode never heard (Win+L and Ctrl+Alt+Delete let go of the
+keys on another screen) counts as up again once the keyboard says it is.
 
 A few dozen sessions of the things you actually do makes a real difference.
 
@@ -150,10 +156,14 @@ nexus live --check
 nexus live --voice
 ```
 
-`pull` puts it in `~/.nexus/live/nexus_vision` (or `NEXUS_LIVE_MODEL_DIR`), where
-NEXUS Live's default backend loads it, replacing whatever model was there. For an
-adapter it also downloads the base model it runs on (about 4.3 GB, once). After that
-it works with no internet. On a graphics card under 8 GB it is loaded in 4 bits.
+`pull` puts it in `~/.nexus/live/nexus_vision` (or `NEXUS_LIVE_MODEL_DIR`, or
+`--to`), where NEXUS Live's default backend loads it, replacing whatever model was
+there. It downloads into a folder beside that one, and only a complete download takes
+the old model's place: if the download stops, running `pull` again carries on where it
+was, and if the new model cannot be moved in, the old one is put back. A folder that
+has other things in it and no model is refused rather than emptied. For an adapter
+it also downloads the base model it runs on (about 4.3 GB, once). After that it works
+with no internet. On a graphics card under 8 GB it is loaded in 4 bits.
 
 ## How good is it?
 
@@ -190,7 +200,10 @@ What `nexus vision train` writes, and NEXUS Live loads:
 
 If NEXUS Live's prompts change, `PROMPT_VERSION` in `nexus/live/model.py` goes up and
 NEXUS Live refuses a model trained on the old ones, with a message saying to train
-again, rather than running it on prompts it never saw.
+again, rather than running it on prompts it never saw. Your recordings carry over:
+the prompts around each one are rebuilt at training time, so one made under older
+prompts is still used when its step passes today's checks (a typed text with a line
+break in it, which the first prompts allowed, does not).
 
 ## Running it through llama.cpp instead
 

@@ -487,30 +487,16 @@ def vision_pull(repo, target):
     """Download your NEXUS Vision from your Hugging Face account, for the local backend."""
     try:
         import json
-        import shutil
 
         from huggingface_hub import snapshot_download
 
-        from nexus.live.local import card_problem
+        from nexus.live.local import card_problem, pull_model
         from nexus.live.settings import LiveSettings
 
         settings = LiveSettings.from_env()
         folder = Path(target or settings.model_dir).expanduser()
         console.print(f"Downloading {repo} into {folder}...")
-        # Into a folder of its own, which then replaces the old one whole: downloading over an old model
-        # left its files behind (an adapter's next to a merged model's), and the old adapter kept loading.
-        staging = folder.with_name(folder.name + ".download")
-        shutil.rmtree(staging, ignore_errors=True)
-        snapshot_download(repo, local_dir=str(staging), ignore_patterns=["checkpoints/*"])
-        if folder.exists():
-            previous = folder.with_name(folder.name + ".old")
-            shutil.rmtree(previous, ignore_errors=True)
-            folder.rename(previous)
-            staging.rename(folder)
-            shutil.rmtree(previous, ignore_errors=True)
-        else:
-            folder.parent.mkdir(parents=True, exist_ok=True)
-            staging.rename(folder)
+        pull_model(repo, folder, snapshot_download)
         adapter = folder / "adapter_config.json"
         if adapter.exists():
             base = json.loads(adapter.read_text(encoding="utf-8")).get("base_model_name_or_path", "")

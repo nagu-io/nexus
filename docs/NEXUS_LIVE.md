@@ -32,14 +32,16 @@ screen, and says what is missing and how to fix it.
 | `nexus live --dry-run` | say what it would do, and touch nothing |
 | `nexus live --teach` | do tasks yourself and save them as training examples |
 
-Keys, which work whichever window is in front (on Windows the window never gets
-them, so they do not type a character there on keyboards with AltGr):
+Keys, which work whichever window is in front. On Windows the window being worked
+on never gets them, and their Alt is the left Alt: on keyboards where the right Alt
+is AltGr, AltGr+Q still types @. Keys a program types, NEXUS Live's own typing
+included, never count as these keys.
 
 | Keys | |
 |---|---|
 | Ctrl+Alt+Space | talk (press again when you are done, or just stop talking) |
 | Ctrl+Alt+Y / Ctrl+Alt+N | yes / no when it asks before a step |
-| Ctrl+Alt+Q | stop what it is doing; pressed while you are still talking, it drops what you said |
+| Ctrl+Alt+Q | stop what it is doing (a question waiting for your answer gets a no at once); pressed while you are still talking, it drops what you said |
 | mouse into a screen corner | emergency stop in the middle of a step |
 
 NEXUS Live never types or clicks in its own console. When you type a request there,
@@ -53,7 +55,9 @@ step, check the step, ask you, do it, look again. It stops when the model says t
 request is done or answered, when you say no, when you press stop, or after 8 steps
 (`NEXUS_LIVE_MAX_STEPS`), and it asks you to carry on rather than wandering. If
 something fails (the model runs out of memory, say), that request ends and NEXUS
-Live waits for the next one.
+Live waits for the next one. In voice mode the same goes for the microphone and
+speech to text, and speech to text moves to the processor if the graphics card fails
+it.
 
 ## What keeps it safe
 
@@ -65,14 +69,17 @@ Live waits for the next one.
   says.** It names the action, the window it lands in, and for typing every
   character it would type and how many. The model's own words about the step are
   not read out while you decide: text on the screen can steer a model, and it could
-  then describe a harmful step as a safe one.
+  then describe a harmful step as a safe one. Nor are its words on the way (while
+  it waits, or before a click `risky` does not ask about), which you would hear
+  just before the next question: you hear only its final answer.
 - **Typing is one line at a time.** Enter and Tab are steps of their own, each
   asked about, so a yes to some text is never also a yes to pressing Enter. Text in
   other languages is typed as characters on Windows; on a Mac or Linux it goes
   through the clipboard, which keeps that text afterwards.
 - **It waits for your hands.** After your yes it waits until Ctrl and Alt are
   released, so the step is not mixed with the keys of the yes. If you press a
-  modifier key while it types, it stops typing.
+  modifier key while it types, or another window comes to the front, it stops
+  typing, so the rest of the text never lands where you did not agree to.
 - **Windows it never acts in**: password managers, Windows Security, banking,
   PayPal, UPI and wallets, PowerShell, Command Prompt, Windows Terminal, Git Bash,
   MSYS2, Cygwin and Anaconda Prompt, the Registry Editor, Group Policy, Task
@@ -88,7 +95,10 @@ Live waits for the next one.
 - **It checks again right before acting.** If another window came forward, a
   different window is now under the click, or the screen near the click has changed
   (a dialog closed, a list scrolled) since the screenshot the model saw, it looks
-  again instead of acting on what is no longer there.
+  again instead of acting on what is no longer there, and says so (once a request).
+  A place that never stops changing, such as a playing video, is told apart by two
+  more looks a moment apart: still changing, it goes ahead; settled into something
+  new, it looks again.
 - **It never clicks off the screenshot.** A position outside it is treated as a
   misread, not clamped to the nearest edge.
 - **The model is told** never to type passwords, one-time codes, card or bank

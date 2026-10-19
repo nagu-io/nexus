@@ -8,6 +8,7 @@ from unittest.mock import patch
 import nexus.live.app as app_module
 from nexus.live.agent import FINISHED, Result
 from nexus.live.app import LiveSession
+from nexus.live.screen import Window
 from nexus.live.settings import LiveSettings
 
 CONSOLE = "MINGW64:/c/Users/nagu/nexus"
@@ -15,7 +16,9 @@ CONSOLE = "MINGW64:/c/Users/nagu/nexus"
 
 def session(lines=None):
     settings = replace(LiveSettings(), speak=False, backend="ollama", model="test-model")
-    live = LiveSession(settings, "test-model", printer=(lines.append if lines is not None else lambda line: None))
+    printed = lines if lines is not None else []
+    live = LiveSession(settings, "test-model", printer=printed.append)
+    live.printed = printed
     live.handled = []
 
     def handle(goal, fresh=True):
@@ -27,13 +30,16 @@ def session(lines=None):
 
 
 class FakeRecorder:
-    """Records one utterance per talk key press; ``during`` runs while recording (the user pressing keys)."""
+    """Records one utterance per talk key press; ``during`` runs while recording (the user pressing keys, or
+    the microphone failing)."""
 
     def __init__(self, live, during):
         self.live = live
         self.during = list(during)
+        self.calls = 0
 
     def record(self, stop):
+        self.calls += 1
         action = self.during.pop(0)
         if action:
             action()
@@ -107,6 +113,61 @@ class ListenLoopTests(unittest.TestCase):
         self.listen(live, [live.talk_requested.set, None], ["what time is it", "goodbye"])
         self.assertEqual(live.handled, [("what time is it", False)])
 
+    def test_a_microphone_that_fails_ends_only_that_request(self):
+        lines = []
+        live = session(lines)
+
+        def fail():
+            live.talk_requested.set()  # the user tries again
+            raise OSError("no input device")
+
+        transcriber = self.listen(live, [fail, live.talk_requested.set, None], ["open notepad", "goodbye"])
+        self.assertIn("NEXUS: I couldn't record that (OSError: no input device).", lines)
+        self.assertEqual(live.handled, [("open notepad", False)])
+        self.assertEqual(transcriber.calls, 2)
+        self.assertFalse(live.recording.is_set())
+
+    def test_speech_to_text_that_fails_ends_only_that_request(self):
+        # faster-whisper out of memory next to NEXUS Vision on a 4 GB card, or its CUDA libraries missing.
+        lines = []
+        live = session(lines)
+
+        def fail():
+            live.talk_requested.set()
+            raise RuntimeError("CUDA failed with error out of memory")
+
+        self.listen(live, [None, live.talk_requested.set, None], [fail, "open notepad", "goodbye"])
+        self.assertIn("NEXUS: I couldn't make out what you said (RuntimeError: CUDA failed with error out of memory).", lines)
+        self.assertEqual(live.handled, [("open notepad", False)])
+
+
+class StopKeyTests(unittest.TestCase):
+    def test_the_stop_key_answers_a_waiting_question_with_no_at_once(self):
+        live = session()
+        live.confirmer.timeout = 30.0
+        answers = []
+        question = threading.Thread(target=lambda: answers.append(live.confirmer.ask("click at (500, 500)")), daemon=True)
+        question.start()
+        while not any(line.startswith("I'll click") for line in live_said(live)):
+            question.join(0.01)
+        live.on_stop()
+        question.join(2)
+        self.assertFalse(question.is_alive(), "the question waited for its timeout")
+        self.assertEqual(answers, [False])
+        self.assertTrue(live.agent.stop_event.is_set())
+
+    def test_a_stop_with_no_question_waiting_is_no_answer_to_the_next_one(self):
+        live = session()
+        live.on_stop()
+        live.confirmer.timeout = 0
+        live.speaker.say = lambda text: live.confirmer.yes() if text.startswith("I'll ") else None
+        self.assertIs(live.confirmer.ask("press enter"), True)
+
+
+def live_said(live):
+    """What the session's speaker has printed, without the "NEXUS: " in front."""
+    return [line[len("NEXUS: "):] for line in live.printed if line.startswith("NEXUS: ")]
+
 
 class TypeLoopTests(unittest.TestCase):
     def test_the_console_a_request_is_typed_in_is_noted_as_its_own(self):
@@ -168,7 +229,7 @@ class DesktopCheckTests(unittest.TestCase):
     def test_everything_readable(self):
         lines = app_module.desktop_lines(
             front=lambda: "Untitled - Notepad",
-            layout=lambda: [(None, (0, 0, 5, 5)), ("Untitled - Notepad", (0, 0, 800, 600))],
+            layout=lambda: [Window(None, (0, 0, 5, 5)), Window("Untitled - Notepad", (0, 0, 800, 600), 42, True)],
             under=lambda point: "Untitled - Notepad" if point == (400, 300) else None,
             held=frozenset,
         )
@@ -182,7 +243,7 @@ class DesktopCheckTests(unittest.TestCase):
         self.assertIn("ask before every step", lines[0][2])
 
     def test_a_window_under_a_point_that_cannot_be_told(self):
-        lines = app_module.desktop_lines(front=lambda: "x", layout=lambda: [("x", (0, 0, 10, 10))],
+        lines = app_module.desktop_lines(front=lambda: "x", layout=lambda: [Window("x", (0, 0, 10, 10))],
                                          under=lambda point: None, held=lambda: frozenset({"ctrl"}))
         self.assertEqual(lines[2][0], "warn")
         self.assertIn("now: ctrl", lines[3][2])

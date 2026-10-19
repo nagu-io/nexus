@@ -20,7 +20,7 @@ from itertools import groupby
 from typing import Any, Callable
 
 from nexus.live.model import Decision
-from nexus.live.screen import Shot
+from nexus.live.screen import Shot, Window
 
 # A wheel notch, in the units each system's scroll call takes.
 WHEEL_NOTCH = 120 if platform.system() == "Windows" else 1
@@ -35,7 +35,10 @@ SHELL_WINDOWS = {
 
 
 class Interrupted(RuntimeError):
-    """A step stopped part-way through: the stop key, or a key held down while typing."""
+    """A step stopped part-way through: the stop key, a key held down, or another window in front."""
+
+
+ANY_WINDOW = object()  # run(): typing goes on whichever window is in front (only for tests and tools)
 
 
 # --- Windows ---------------------------------------------------------------
@@ -142,34 +145,63 @@ def _windows_held() -> frozenset[str]:
     return frozenset(name for name, codes in _WINDOWS_MODIFIERS.items() if any(state(code) & 0x8000 for code in codes))
 
 
+VK_LMENU, VK_RMENU = 0xA4, 0xA5
+
+
+def hotkey_modifiers() -> frozenset[str] | None:
+    """The modifiers held down, for NEXUS Live's own hotkeys on Windows: Alt is the LEFT Alt only.
+
+    On many keyboards the right Alt is AltGr, which Windows reports as Ctrl and
+    Alt held together: AltGr+Q makes "@" on a German keyboard, and must type it,
+    not stop NEXUS. None where this cannot be read.
+    """
+    try:
+        state = _user32().GetAsyncKeyState
+        down = lambda code: bool(state(code) & 0x8000)  # noqa: E731
+        held = {name for name, codes in _WINDOWS_MODIFIERS.items() if name != "alt" and any(down(code) for code in codes)}
+        if down(VK_LMENU) and not down(VK_RMENU):
+            held.add("alt")
+        return frozenset(held)
+    except Exception:
+        return None
+
+
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
 DWMWA_CLOAKED = 14
 
 
-def _windows_layout() -> list[tuple[str | None, tuple[int, int, int, int]]]:
+def _windows_layout() -> list[Window]:
     from ctypes import wintypes
 
     user32 = _user32()
     dwmapi = ctypes.WinDLL("dwmapi")  # type: ignore[attr-defined]
     dwmapi.DwmGetWindowAttribute.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32]
     dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
-    found: list[tuple[str | None, tuple[int, int, int, int]]] = []
+    front = user32.GetForegroundWindow()
+    found: list[Window] = []
+    failures: list[BaseException] = []
 
     @ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)  # type: ignore[attr-defined]
     def each(handle: Any, _: Any) -> int:
-        if not user32.IsWindowVisible(handle) or user32.IsIconic(handle):
-            return 1
-        cloaked = ctypes.c_int(0)  # on another desktop, or a suspended app: not on the screen
-        if dwmapi.DwmGetWindowAttribute(handle, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked)) == 0 and cloaked.value:
-            return 1
-        rect = wintypes.RECT()
-        if dwmapi.DwmGetWindowAttribute(handle, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect)) != 0:
-            user32.GetWindowRect(handle, ctypes.byref(rect))
-        if rect.right > rect.left and rect.bottom > rect.top:
-            found.append((_window_text(user32, handle) or None, (rect.left, rect.top, rect.right, rect.bottom)))
+        try:
+            if not user32.IsWindowVisible(handle) or user32.IsIconic(handle):
+                return 1
+            cloaked = ctypes.c_int(0)  # on another desktop, or a suspended app: not on the screen
+            if dwmapi.DwmGetWindowAttribute(handle, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked)) == 0 and cloaked.value:
+                return 1
+            rect = wintypes.RECT()
+            if dwmapi.DwmGetWindowAttribute(handle, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect)) != 0:
+                user32.GetWindowRect(handle, ctypes.byref(rect))
+            if rect.right > rect.left and rect.bottom > rect.top:
+                found.append(Window(_window_text(user32, handle) or None, (rect.left, rect.top, rect.right, rect.bottom),
+                                    _process(user32, handle) or None, bool(front) and handle == front))
+        except Exception as error:  # noted, and the whole layout refused below: a window left out could be one to hide
+            failures.append(error)
         return 1  # go on to the next window
 
     user32.EnumWindows(each, None)  # top window first
+    if failures:
+        raise failures[0]
     return found
 
 
@@ -311,8 +343,8 @@ def _x11_window_at(x: int, y: int) -> str | None:
         screen.close()
 
 
-def _x11_layout() -> list[tuple[str | None, tuple[int, int, int, int]]]:
-    from Xlib import X, display  # type: ignore
+def _x11_layout() -> list[Window]:
+    from Xlib import X, display, error  # type: ignore
 
     screen = display.Display()
     try:
@@ -322,6 +354,9 @@ def _x11_layout() -> list[tuple[str | None, tuple[int, int, int, int]]]:
             windows = [screen.create_resource_object("window", wid) for wid in stacking.value]
         else:
             windows = list(root.query_tree().children)
+        active = root.get_full_property(screen.intern_atom("_NET_ACTIVE_WINDOW"), X.AnyPropertyType)
+        front = active.value[0] if active is not None and len(active.value) else None
+        pid_atom = screen.intern_atom("_NET_WM_PID")
         found = []
         for window in reversed(windows):
             try:
@@ -330,9 +365,13 @@ def _x11_layout() -> list[tuple[str | None, tuple[int, int, int, int]]]:
                 geometry = window.get_geometry()
                 origin = root.translate_coords(window, 0, 0)
                 name = _x11_name(screen, window)
-            except Exception:
+                pid = window.get_full_property(pid_atom, X.AnyPropertyType)
+            except (error.BadWindow, error.BadDrawable):  # closed in the meantime: no longer on the screen
                 continue
-            found.append((name, (origin.x, origin.y, origin.x + geometry.width, origin.y + geometry.height)))
+            # Anything else fails the whole layout: a window left out could be one to black out.
+            box = (origin.x, origin.y, origin.x + geometry.width, origin.y + geometry.height)
+            process = int(pid.value[0]) if pid is not None and len(pid.value) else None
+            found.append(Window(name, box, process, window.id == front))
         return found
     finally:
         screen.close()
@@ -393,8 +432,9 @@ def window_at(point: tuple[int, int]) -> str | None:
         return None
 
 
-def window_layout() -> list[tuple[str | None, tuple[int, int, int, int]]] | None:
-    """The windows on the screen, the top one first, with their titles and places; None when that cannot be read.
+def window_layout() -> list[Window] | None:
+    """The windows on the screen, the top one first (title, place, program, and which is in front); None when
+    that cannot be read.
 
     Teach mode blacks out the ones it never records (password managers,
     banking, terminals) in its screenshots. A Mac cannot be asked: None.
@@ -527,12 +567,14 @@ class Executor:
                 return False
             self._sleep(poll)
 
-    def _check(self, stop: threading.Event | None) -> None:
+    def _check(self, stop: threading.Event | None, window: Any) -> None:
         if stop is not None and stop.is_set():
             raise Interrupted("stopped")
         held = self._key_reader()
         if held:
             raise Interrupted(f"{'+'.join(sorted(held))} held down")
+        if window is not ANY_WINDOW and self.foreground_title() != window:
+            raise Interrupted("the window in front changed")
 
     def _paste(self, text: str) -> None:
         # Typing other than plain ASCII on a Mac or Linux goes through the clipboard,
@@ -547,29 +589,34 @@ class Executor:
         clipboard.copy(text)
         self.backend.hotkey("command" if self.system == "Darwin" else "ctrl", "v")
 
-    def _type(self, text: str, stop: threading.Event | None) -> None:
-        """Type ``text``, a character at a time, stopping at once for the stop key or a key held down.
+    def _type(self, text: str, stop: threading.Event | None, window: Any) -> None:
+        """Type ``text``, a character at a time, stopping at once for the stop key, a key held down,
+        or another window coming to the front.
 
         A modifier held down while typing would turn the letters into
-        shortcuts, so typing stops instead of carrying on.
+        shortcuts, and a window that came forward would get the rest of text
+        that was approved for another one: typing stops instead of carrying on.
         """
         if self.system != "Windows" and not text.isascii():
-            self._check(stop)
+            self._check(stop, window)
             self._paste(text)  # in one piece: two pastes in a row could race each other
             return
         for plain, characters in groupby(text, key=str.isascii):
             if plain:
                 for letter in characters:
-                    self._check(stop)
+                    self._check(stop, window)
                     self.backend.write(letter)
             else:  # Telugu, accents, emoji: straight in as characters, never through the clipboard
-                self._check(stop)
+                self._check(stop, window)
                 self._unicode_typer("".join(characters))
 
-    def run(self, decision: Decision, point: tuple[int, int] | None, stop: threading.Event | None = None) -> str:
+    def run(self, decision: Decision, point: tuple[int, int] | None, stop: threading.Event | None = None,
+            window: Any = ANY_WINDOW) -> str:
         """Carry out ``decision`` (at ``point``, for the actions that need one) and say what was done.
 
-        Raises Interrupted when typing is cut short by ``stop`` or a key held down.
+        ``window`` is the title of the window in front the step was approved
+        for (ANY_WINDOW, the default, to not check). Raises Interrupted when typing
+        is cut short by ``stop``, a key held down, or another window in front.
         """
         description = decision.describe()
         if self.dry_run:
@@ -583,7 +630,7 @@ class Executor:
                 point[0], point[1]
             )
         elif action == "type":
-            self._type(decision.text, stop)
+            self._type(decision.text, stop, window)
         elif action == "press":
             backend.press(decision.keys[0])
         elif action == "hotkey":

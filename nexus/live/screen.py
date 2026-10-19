@@ -31,6 +31,16 @@ class OutsideScreen(ValueError):
     """The model pointed outside the screenshot."""
 
 
+@dataclass(frozen=True)
+class Window:
+    """A window on the screen, as teach mode's masking sees it."""
+
+    title: str | None
+    box: tuple[int, int, int, int]  # left, top, right, bottom, on the screen
+    process: int | None = None  # the program it belongs to, where that can be read
+    front: bool = False  # the window in front
+
+
 def _make_dpi_aware() -> None:
     # Without this, Windows with display scaling (125%, 150%) reports a
     # smaller screen than the screenshot, and clicks land in the wrong place.
@@ -135,28 +145,34 @@ def shrink(
     return Shot(buffer.getvalue(), image.size[0], image.size[1], screen_width, screen_height, left, top)
 
 
-def cover_windows(frame: Frame, layout: list[tuple[str | None, tuple[int, int, int, int]]], hidden) -> bool:
+def cover_windows(frame: Frame, layout: list[Window], hidden) -> bool:
     """Black out every part of ``frame`` where a window that ``hidden(title)`` picks can be seen.
 
-    ``layout`` is the visible windows, the top one first, each with its title
-    and its (left, top, right, bottom) on the screen. Each window is laid over
-    the ones below it, so a window behind the one being worked on is covered
-    only where it shows. True if anything was covered.
+    ``layout`` is the visible windows, the top one first. A hidden window is
+    covered whole, and so is every window of the same program but the one in
+    front (its pop-ups, tooltips and dialogs, titled or not). Only the window in
+    front, laid over a hidden one, uncovers what it hides: any other window may
+    be see-through (an overlay, a screen recorder's frame), so it is never
+    trusted to hide anything. True if anything was covered.
     """
     from PIL import Image, ImageDraw  # type: ignore
 
+    hidden_programs = {window.process for window in layout if window.process is not None and hidden(window.title)}
     scale_x, scale_y = frame.width / max(1, frame.screen_width), frame.height / max(1, frame.screen_height)
     mask = Image.new("1", (frame.width, frame.height), 0)
     draw = ImageDraw.Draw(mask)
-    for title, (left, top, right, bottom) in reversed(layout):
+    for window in reversed(layout):  # the bottom window first, each laid over the ones below it
+        left, top, right, bottom = window.box
         x0, y0 = (left - frame.left) * scale_x, (top - frame.top) * scale_y
         x1, y1 = (right - frame.left) * scale_x, (bottom - frame.top) * scale_y
-        if hidden(title):  # every pixel it touches
-            box = (math.floor(x0), math.floor(y0), math.ceil(x1) - 1, math.ceil(y1) - 1)
+        if hidden(window.title) or (window.process in hidden_programs and not window.front):
+            box = (math.floor(x0), math.floor(y0), math.ceil(x1) - 1, math.ceil(y1) - 1)  # every pixel it touches
             fill = 1
-        else:  # only the pixels it covers whole, so the edge of a hidden window below never shows
-            box = (math.ceil(x0), math.ceil(y0), math.floor(x1) - 1, math.floor(y1) - 1)
+        elif window.front:
+            box = (math.ceil(x0), math.ceil(y0), math.floor(x1) - 1, math.floor(y1) - 1)  # only pixels it covers whole
             fill = 0
+        else:
+            continue
         if box[2] >= box[0] and box[3] >= box[1]:
             draw.rectangle(box, fill=fill)
     if mask.getbbox() is None:

@@ -41,6 +41,7 @@ _NAMED_KEYS = {"space": 0x20, "enter": 0x0D, "esc": 0x1B, "tab": 0x09, "backspac
 _NAMED_KEYS.update({f"f{number}": 0x6F + number for number in range(1, 13)})
 
 WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x0100, 0x0101, 0x0104, 0x0105
+LLKHF_INJECTED = 0x10
 
 
 def _virtual_key(name: str) -> int | None:
@@ -57,15 +58,17 @@ def hotkey_filter(
     """A pynput ``win32_event_filter`` that keeps NEXUS Live's hotkeys to itself, on Windows.
 
     pynput's hotkeys hear keys without taking them, so Ctrl+Alt+Y also reaches
-    the window being worked on: a shortcut there, or a character on keyboards
-    with AltGr (where Ctrl+Alt+Q is @). Here, when the last key of a hotkey
-    goes down with its modifiers held, the hotkey's callback is started and
-    the key goes no further, to that window or to pynput.
+    the window being worked on, where it can be a shortcut. Here, when the last
+    key of a hotkey goes down with exactly its modifiers held, the hotkey's
+    callback is started and the key goes no further, to that window or to
+    pynput. Alt means the left Alt: the right one is AltGr on many keyboards
+    (AltGr+Q is @ in German), and what AltGr types is left alone. So are keys
+    that a program typed, NEXUS's own included.
     """
     if held is None:
-        from nexus.live.executor import held_modifiers
+        from nexus.live.executor import hotkey_modifiers
 
-        held = held_modifiers
+        held = hotkey_modifiers
     table: dict[int, list[tuple[frozenset[str], Callable[[], None]]]] = {}
     for hotkey, callback in callbacks.items():
         modifiers, last = hotkey_keys(hotkey)
@@ -75,6 +78,8 @@ def hotkey_filter(
     down: set[int] = set()
 
     def judge(message: int, data: Any) -> tuple[bool, Callable[[], None] | None]:
+        if int(data.flags) & LLKHF_INJECTED:
+            return False, None  # keys a program typed (NEXUS's own among them) are never the user's hotkeys
         code = int(data.vkCode)
         entries = table.get(code)
         if not entries:
@@ -253,17 +258,22 @@ class Transcriber:
     def __init__(self, model_size: str = "base"):
         self.model_size = model_size
         self._model: Any = None
+        self._force_cpu = False
+        self._on_cpu = False
 
     def _get_model(self) -> Any:
         if self._model is None:
             from faster_whisper import WhisperModel  # type: ignore
 
-            try:
-                import ctranslate2  # type: ignore
+            on_gpu = False
+            if not self._force_cpu:
+                try:
+                    import ctranslate2  # type: ignore
 
-                on_gpu = ctranslate2.get_cuda_device_count() > 0
-            except Exception:
-                on_gpu = False
+                    on_gpu = ctranslate2.get_cuda_device_count() > 0
+                except Exception:
+                    on_gpu = False
+            self._on_cpu = not on_gpu
             self._model = WhisperModel(
                 self.model_size, device="cuda" if on_gpu else "cpu", compute_type="float16" if on_gpu else "int8"
             )
@@ -272,6 +282,17 @@ class Transcriber:
     def transcribe(self, audio: Any) -> str:
         if audio is None or len(audio) == 0:
             return ""
+        try:
+            return self._transcribe(audio)
+        except Exception:
+            if self._on_cpu:
+                raise
+            # The graphics card failed (out of memory next to NEXUS Vision, CUDA libraries missing):
+            # the processor is slower, but it works.
+            self._model, self._force_cpu = None, True
+            return self._transcribe(audio)
+
+    def _transcribe(self, audio: Any) -> str:
         segments, _ = self._get_model().transcribe(audio, beam_size=1, vad_filter=True)
         return " ".join(segment.text.strip() for segment in segments).strip()
 
@@ -295,6 +316,10 @@ class HotkeyConfirmer:
         self._answers.put(True)
 
     def no(self) -> None:
+        self._answers.put(False)
+
+    def cancel(self) -> None:
+        """The stop key: a question waiting for an answer gets a no at once, not at the timeout."""
         self._answers.put(False)
 
     def ask(self, description: str) -> bool:
