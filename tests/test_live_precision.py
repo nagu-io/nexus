@@ -202,6 +202,22 @@ class RuntimeDtypeTests(unittest.TestCase):
         self.assertEqual(local._compute_dtype(fake_torch(cuda=False)), "float16")
 
 
+class LoadOptionsTests(unittest.TestCase):
+    def options(self, **card):
+        torch = fake_torch(**card)
+        with mock.patch.dict(sys.modules, {"torch": torch}):
+            return local.load_options(torch, "off")
+
+    def test_a_t4_runs_the_model_in_float16_not_emulated_bfloat16(self):
+        self.assertEqual(self.options(capability=(7, 5), memory_gb=15), {"dtype": "float16", "device_map": "auto"})
+
+    def test_an_rtx_30_series_runs_it_in_bfloat16(self):
+        self.assertEqual(self.options(capability=(8, 6), memory_gb=12), {"dtype": "bfloat16", "device_map": "auto"})
+
+    def test_no_graphics_card_keeps_the_model_s_own_format(self):
+        self.assertEqual(self.options(cuda=False), {"dtype": "auto"})
+
+
 class CudaTorchCheckTests(unittest.TestCase):
     def lines(self, gpu, cuda):
         settings = replace(LiveSettings(), model_dir="/nonexistent/nexus_vision")

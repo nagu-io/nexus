@@ -101,6 +101,24 @@ def _compute_dtype(torch: Any) -> Any:
     return torch.float16
 
 
+def load_options(torch: Any, load_4bit: str) -> dict[str, Any]:
+    """How from_pretrained loads the model on this computer: which device, which number format, 4 bits or not."""
+    options: dict[str, Any] = {"dtype": "auto"}
+    if torch.cuda.is_available():
+        options["device_map"] = "auto"
+        # Qwen3-VL ships in bfloat16, which cards before the RTX 30 series (a T4) only emulate, slowly.
+        options["dtype"] = _compute_dtype(torch)
+    if _want_4bit(load_4bit):
+        from transformers import BitsAndBytesConfig  # type: ignore
+
+        options["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=_compute_dtype(torch)
+        )
+        options["device_map"] = {"": 0}
+        options.pop("dtype")
+    return options
+
+
 class LocalVision(VisionModel):
     """A vision model loaded in this process. ``model_dir`` is a NEXUS Vision folder (checked against its
     model card), or, with ``check_card=False``, any Qwen3-VL folder or Hub name, such as the base model."""
@@ -136,17 +154,7 @@ class LocalVision(VisionModel):
         except ImportError:
             raise ModelUnavailable("The local backend needs torch and transformers. Run: pip install -e .[vision]") from None
 
-        options: dict[str, Any] = {"dtype": "auto"}
-        if torch.cuda.is_available():
-            options["device_map"] = "auto"
-        if _want_4bit(self.load_4bit):
-            from transformers import BitsAndBytesConfig  # type: ignore
-
-            options["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=_compute_dtype(torch)
-            )
-            options["device_map"] = {"": 0}
-            options.pop("dtype")
+        options = load_options(torch, self.load_4bit)
 
         folder = Path(self.model_dir)
         adapter_file = folder / "adapter_config.json"
