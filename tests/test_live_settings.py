@@ -184,11 +184,12 @@ class NumberTests(unittest.TestCase):
                 self.assertEqual(str(caught.exception), f"{variable} must be a number, not 'soon'")
 
     def test_whole_number_settings_refuse_fractions(self):
-        for variable in ("NEXUS_LIVE_MAX_STEPS", "NEXUS_LIVE_SCREEN_WIDTH"):
+        # Fractions inside the range, so only the whole-number rule can refuse them.
+        for variable, value in (("NEXUS_LIVE_MAX_STEPS", "2.5"), ("NEXUS_LIVE_SCREEN_WIDTH", "600.5")):
             with self.subTest(variable=variable):
                 with self.assertRaises(ValueError) as caught:
-                    settings_from(**{variable: "600.5"})
-                self.assertIn(variable, str(caught.exception))
+                    settings_from(**{variable: value})
+                self.assertEqual(str(caught.exception), f"{variable} must be a number, not {value!r}")
 
     def test_whole_number_settings_are_ints(self):
         settings = settings_from(NEXUS_LIVE_MAX_STEPS=" 12 ", NEXUS_LIVE_SCREEN_WIDTH="1024")
@@ -372,6 +373,8 @@ class WindowMatchesTests(unittest.TestCase):
 
     def test_nothing_to_match(self):
         self.assertIsNone(window_matches(None, ("bank",)))  # type: ignore[arg-type]
+        # A missing title is empty text, never a placeholder that some word could match.
+        self.assertIsNone(window_matches(None, ("none", "null", "xxxx")))  # type: ignore[arg-type]
         self.assertIsNone(window_matches("", ("bank",)))
         self.assertIsNone(window_matches("My Bank", ()))
 

@@ -1,11 +1,12 @@
 """Tests for nexus.live.screen: turning the model's positions into pixels, shrinking screenshots, and change detection."""
 
+import dataclasses
 import importlib.util
 import io
 import math
 import sys
 import unittest
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import nexus.live.screen as screen_module
@@ -93,20 +94,31 @@ class InputTests(unittest.TestCase):
     def test_outside_screen_is_a_value_error(self):
         self.assertTrue(issubclass(OutsideScreen, ValueError))
 
+    def test_shot_cannot_be_changed(self):
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            SHOT.width = 1  # type: ignore[misc]
+
     def test_not_numbers(self):
         for x, y in ((None, 5.0), (5.0, None), ("5", 5.0), (5.0, "5"), ([1], 5.0)):
             with self.subTest(x=x, y=y):
-                with self.assertRaises(OutsideScreen):
+                with self.assertRaises(OutsideScreen) as caught:
                     to_screen(x, y, SHOT, "normalized")
+                self.assertEqual(str(caught.exception), f"not a position: {x!r}, {y!r}")
 
     def test_not_finite(self):
         for value in (math.nan, math.inf, -math.inf):
             with self.subTest(value=value):
                 for mode in ("normalized", "pixels"):
-                    with self.assertRaises(OutsideScreen):
+                    with self.assertRaises(OutsideScreen) as caught:
                         to_screen(value, 5.0, SHOT, mode)
-                    with self.assertRaises(OutsideScreen):
+                    self.assertEqual(str(caught.exception), f"not a position: {value!r}, 5.0")
+                    with self.assertRaises(OutsideScreen) as caught:
                         to_screen(5.0, value, SHOT, mode)
+                    self.assertEqual(str(caught.exception), f"not a position: 5.0, {value!r}")
+
+    def test_not_a_position_is_found_before_the_mode_is_read(self):
+        with self.assertRaises(OutsideScreen):
+            to_screen(math.nan, 5.0, SHOT, "percent")
 
     def test_unknown_mode(self):
         for mode in ("percent", "Normalized", ""):
@@ -114,7 +126,7 @@ class InputTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     to_screen(1, 1, SHOT, mode)
                 self.assertNotIsInstance(caught.exception, OutsideScreen)
-                self.assertIn("unknown coordinate mode", str(caught.exception))
+                self.assertEqual(str(caught.exception), f"unknown coordinate mode {mode!r}")
 
     def test_whole_numbers_work_too(self):
         self.assertEqual(to_screen(500, 500, SHOT, "normalized"), to_screen(500.0, 500.0, SHOT, "normalized"))
@@ -180,6 +192,72 @@ def opened(data):
     return Image.open(io.BytesIO(data))
 
 
+def patterned(width, height):
+    """An RGB picture with enough detail that PNG optimization makes a difference."""
+    from PIL import Image
+
+    image = Image.new("RGB", (width, height))
+    image.putdata([((x * 7) % 256, (y * 5) % 256, ((x ^ y) * 3) % 256) for y in range(height) for x in range(width)])
+    return image
+
+
+class FakeMss:
+    """The mss package: monitors[0] is every monitor together, monitors[1] the main one."""
+
+    def __init__(self, main, pixel=(30, 20, 10, 255), pattern=False):
+        self.monitors = [{"left": -1920, "top": -30, "width": 1920 + main["width"], "height": 1080}, main]
+        self.pixel = bytes(pixel)  # blue, green, red, unused: the order mss gives
+        self.pattern = pattern
+        self.grabbed = []
+
+    def module(self):
+        module = ModuleType("mss")
+        module.mss = lambda: self
+        return module
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *error):
+        return False
+
+    def grab(self, monitor):
+        self.grabbed.append(monitor)
+        width, height = monitor["width"], monitor["height"]
+        if self.pattern:
+            data = bytes(value for y in range(height) for x in range(width) for value in ((x * 7) % 256, (y * 5) % 256, ((x ^ y) * 3) % 256, 255))
+        else:
+            data = self.pixel * (width * height)
+        return SimpleNamespace(size=(width, height), bgra=data)
+
+
+@unittest.skipUnless(HAS_PILLOW, "needs Pillow")
+class CaptureTests(unittest.TestCase):
+    def capture(self, fake, *args, **kwargs):
+        with patch.dict(sys.modules, {"mss": fake.module()}), patch.object(screen_module.platform, "system", return_value="Linux"):
+            return screen_module.capture(*args, **kwargs)
+
+    def test_main_monitor_is_captured_and_shrunk(self):
+        main = {"left": 100, "top": 50, "width": 40, "height": 20}
+        fake = FakeMss(main)
+        shot = self.capture(fake, 20)
+        self.assertEqual(fake.grabbed, [main])
+        self.assertEqual((shot.width, shot.height, shot.screen_width, shot.screen_height, shot.left, shot.top), (20, 10, 40, 20, 100, 50))
+        with opened(shot.image) as picture:
+            self.assertEqual(picture.mode, "RGB")
+            self.assertEqual(picture.getpixel((5, 5)), (10, 20, 30))
+
+    def test_shrunk_to_1280_wide_by_default(self):
+        self.assertEqual(self.capture(FakeMss({"left": 0, "top": 0, "width": 1281, "height": 2})).width, 1280)
+        self.assertEqual(self.capture(FakeMss({"left": 0, "top": 0, "width": 1279, "height": 2})).width, 1279)
+
+    def test_optimized_by_default(self):
+        main = {"left": 0, "top": 0, "width": 320, "height": 180}
+        optimized = self.capture(FakeMss(main, pattern=True))
+        quick = self.capture(FakeMss(main, pattern=True), optimize=False)
+        self.assertLess(len(optimized.image), len(quick.image))
+
+
 @unittest.skipUnless(HAS_PILLOW, "needs Pillow")
 class ShrinkTests(unittest.TestCase):
     def image(self, size):
@@ -216,6 +294,10 @@ class ShrinkTests(unittest.TestCase):
         shot = shrink(self.image((5000, 1)), 1280, 5000, 1)
         self.assertEqual((shot.width, shot.height), (1280, 1))
 
+    def test_png_is_optimized_unless_asked_not_to(self):
+        image = patterned(320, 180)
+        self.assertLess(len(shrink(image, 1280, 320, 180).image), len(shrink(image, 1280, 320, 180, optimize=False).image))
+
     def test_unoptimized_png_shows_the_same_picture(self):
         from PIL import Image
 
@@ -245,6 +327,11 @@ class ThumbnailDifferenceTests(unittest.TestCase):
     def test_half_the_screen(self):
         left_half = {(x, y): 255 for x in range(32) for y in range(36)}
         self.assertEqual(thumbnail_difference(png((64, 36), 0), png((64, 36), 0, pixels=left_half)), 0.5)
+
+    @unittest.skipUnless(HAS_PILLOW, "needs Pillow")
+    def test_top_half_of_the_screen(self):
+        top_half = {(x, y): 255 for x in range(64) for y in range(18)}
+        self.assertEqual(thumbnail_difference(png((64, 36), 0), png((64, 36), 0, pixels=top_half)), 0.5)
 
     @unittest.skipUnless(HAS_PILLOW, "needs Pillow")
     def test_a_change_of_24_grey_levels_does_not_count_but_25_does(self):

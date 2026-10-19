@@ -430,11 +430,9 @@ class ModelTroubleTests(unittest.TestCase):
         self.assertEqual(rig.agent.handle("finish"), Result(FINISHED, said="Done.", steps=[]))
         self.assertIn("(your last answer could not be used: the answer has no JSON object in it; answer again)", model.texts[1])
 
-    @unittest.expectedFailure
     def test_huge_number_from_the_model_gives_up_instead_of_crashing(self):
-        # BUG: parse_decision raises OverflowError (not DecisionError) for a whole number too big
-        # for a float, so _decide does not catch it and handle() crashes the request (and the
-        # console loop above it) instead of retrying and giving up.
+        # A number too big for a float in the model's answer is an unreadable answer: tried again,
+        # then given up, never a crash of the request or the console loop.
         huge = '{"thought": "", "say": "", "action": "click", "x": 1' + "0" * 400 + ', "y": 5}'
         rig = Rig()
         rig.agent.vision = ScriptedModel(huge, huge)

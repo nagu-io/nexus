@@ -50,7 +50,7 @@ class RunLogTests(unittest.TestCase):
         self.clock.now = 599
         log.print("step 1 of 300: loss 2.1")
         self.assertEqual(len(self.api.uploads), 1)
-        self.clock.now = 1199
+        self.clock.now = 600
         log.print("step 2 of 300: loss 1.9")
         self.assertEqual(len(self.api.uploads), 2)
         path, repo, text = self.api.uploads[-1]

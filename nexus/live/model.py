@@ -126,16 +126,16 @@ class Decision:
 
 
 def _number(value: Any, name: str) -> float:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise DecisionError(f"{name} is not a number")
-    if isinstance(value, str):
-        try:
-            value = float(value.strip())
-        except ValueError:
-            raise DecisionError(f"{name} is not a number: {value!r}") from None
-    if not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise DecisionError(f"{name} is not a number: {value!r}")
-    return float(value)
+    try:
+        # float() of a whole number too big for a float (JSON allows any number of digits) raises OverflowError.
+        number = float(value.strip() if isinstance(value, str) else value)
+    except (ValueError, OverflowError):
+        raise DecisionError(f"{name} is not a number: {str(value)[:40]!r}") from None
+    if not math.isfinite(number):
+        raise DecisionError(f"{name} is not a number: {number!r}")
+    return number
 
 
 def _text(value: Any, name: str, limit: int) -> str:
@@ -147,6 +147,12 @@ def _text(value: Any, name: str, limit: int) -> str:
     if len(value) > limit:
         raise DecisionError(f"{name} is longer than {limit} characters")
     return value
+
+
+def _control(character: str) -> bool:
+    """A control character that must never be typed: C0 (but newline and tab), DEL, and C1 (0x80 to 0x9f, CSI among them)."""
+    code = ord(character)
+    return (code < 32 and character not in "\n\t") or 0x7F <= code <= 0x9F
 
 
 def _key(value: Any) -> str:
@@ -168,10 +174,13 @@ def _keys(raw: dict[str, Any]) -> tuple[str, ...]:
     return tuple(_key(key) for key in keys)
 
 
+POINT_NAMES = ("point_2d", "point", "coordinate", "coordinates", "position")
+
+
 def _point(raw: dict[str, Any]) -> tuple[float, float]:
     if "x" in raw and "y" in raw:
         return _number(raw["x"], "x"), _number(raw["y"], "y")
-    for name in ("point_2d", "point", "coordinate", "coordinates", "position"):
+    for name in POINT_NAMES:
         value = raw.get(name)
         if isinstance(value, (list, tuple)) and len(value) == 2:
             return _number(value[0], "x"), _number(value[1], "y")
@@ -215,7 +224,7 @@ def parse_decision(raw: str | dict[str, Any]) -> Decision:
             raise DecisionError("there is no text to type")
         if len(text) > MAX_TEXT:
             raise DecisionError(f"the text to type is longer than {MAX_TEXT} characters")
-        if any(ord(character) < 32 and character not in "\n\t" for character in text):
+        if any(_control(character) for character in text):
             raise DecisionError("the text to type has control characters in it")
         return Decision(action, say, thought, text=text)
     if action == "press":
@@ -234,7 +243,7 @@ def parse_decision(raw: str | dict[str, Any]) -> Decision:
         if amount != int(amount) or amount == 0 or abs(amount) > MAX_SCROLL:
             raise DecisionError(f"amount must be a whole number from -{MAX_SCROLL} to {MAX_SCROLL}, not 0")
         x = y = None
-        if "x" in data or "y" in data or any(name in data for name in ("point_2d", "point", "coordinate")):
+        if "x" in data or "y" in data or any(name in data for name in POINT_NAMES):
             x, y = _point(data)
         return Decision(action, say, thought, x=x, y=y, amount=int(amount))
     if action == "wait":
@@ -395,9 +404,10 @@ class OllamaVision(VisionModel):
         try:
             response = self._client.get(f"{self.base_url}/api/tags", timeout=5)
             response.raise_for_status()
-        except httpx.HTTPError:
-            return []
-        return [item.get("name", "") for item in response.json().get("models", []) if item.get("name")]
+            models = response.json().get("models", [])
+            return [item["name"] for item in models if isinstance(item, dict) and item.get("name")]
+        except (httpx.HTTPError, ValueError, AttributeError, TypeError):
+            return []  # not running, or something else on its port
 
     def _chat(self, system: str, text: str, image: bytes, schema: dict[str, Any]) -> str:
         payload = {

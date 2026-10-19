@@ -1,6 +1,7 @@
 """Tests for nexus.live.model: reading the vision model's answer, the shared prompts, and the local model clients."""
 
 import base64
+import hashlib
 import json
 import math
 import unittest
@@ -21,6 +22,7 @@ from nexus.live.model import (
     OBSERVE_QUESTION,
     OBSERVE_SCHEMA,
     POINTER_ACTIONS,
+    PROMPT_VERSION,
     QUIET_ACTIONS,
     Decision,
     DecisionError,
@@ -271,11 +273,9 @@ class PointerTests(unittest.TestCase):
     def test_off_screen_positions_are_left_to_to_screen(self):
         self.assertEqual(parse("click", x=-5, y=5000), Decision("click", x=-5.0, y=5000.0))
 
-    @unittest.expectedFailure
     def test_huge_whole_number_is_a_decision_error(self):
-        # BUG: _number calls math.isfinite on a Python int, which raises OverflowError for an
-        # integer too big for a float (JSON allows any number of digits). parse_decision then
-        # raises OverflowError instead of DecisionError, so LiveAgent's retry never sees it.
+        # JSON allows any number of digits. A whole number too big for a float is a bad answer
+        # (DecisionError), never an OverflowError that would get past the agent's retry.
         huge = "1" + "0" * 400
         with self.assertRaises(DecisionError):
             parse_decision('{"action": "click", "x": ' + huge + ', "y": 5}')
@@ -317,10 +317,9 @@ class TypeTests(unittest.TestCase):
     def test_other_languages_are_allowed(self):
         self.assertEqual(parse("type", text="café 日本語 నమస్తే").text, "café 日本語 నమస్తే")
 
-    @unittest.expectedFailure
     def test_delete_and_c1_control_characters_are_refused(self):
-        # BUG: the check only refuses code points below 32, so DEL (0x7f) and the C1 controls
-        # (0x80 to 0x9f, such as 0x9b, the one-byte terminal escape CSI) are typed or pasted.
+        # DEL (0x7f) and the C1 controls (0x80 to 0x9f, such as 0x9b, the one-byte terminal escape
+        # CSI) are never typed or pasted.
         for character in ("\x7f", "\x9b"):
             with self.assertRaisesRegex(DecisionError, "control characters"):
                 parse("type", text=f"abc{character}def")
@@ -488,11 +487,9 @@ class ScrollTests(unittest.TestCase):
                 with self.assertRaisesRegex(DecisionError, r"the position \(x and y\) is missing"):
                     parse("scroll", amount=3, **fields)
 
-    @unittest.expectedFailure
     def test_position_named_coordinates_or_position_is_kept(self):
-        # BUG: _point reads "coordinates" and "position", but scroll only looks for a position
-        # under "x", "y", "point_2d", "point" and "coordinate", so these two are silently dropped
-        # and the scroll lands wherever the pointer happens to be.
+        # A scroll takes its position under every name _point reads, so it lands where the model
+        # meant, not wherever the pointer happens to be.
         for name in ("coordinates", "position"):
             self.assertEqual(parse("scroll", amount=3, **{name: [10, 20]}), Decision("scroll", x=10.0, y=20.0, amount=3))
 
@@ -640,6 +637,21 @@ class PromptTests(unittest.TestCase):
                 self.assertIn("wait: seconds (at most 5)", prompt)
                 self.assertTrue(prompt.endswith("Reply with JSON only."))
 
+    def test_prompt_version_changes_with_the_prompts(self):
+        # A fine-tuned NEXUS Vision records the PROMPT_VERSION it was trained on, and local.py refuses
+        # one trained on another version. If this fails, the prompts or the answer format changed:
+        # bump PROMPT_VERSION in nexus/live/model.py, then put the new version and fingerprint here.
+        parts = [
+            system_prompt("normalized"),
+            system_prompt("pixels"),
+            OBSERVE_PROMPT,
+            OBSERVE_QUESTION,
+            json.dumps(DECISION_SCHEMA, sort_keys=True),
+            json.dumps(OBSERVE_SCHEMA, sort_keys=True),
+        ]
+        fingerprint = hashlib.sha256("\n\n".join(parts).encode("utf-8")).hexdigest()
+        self.assertEqual((PROMPT_VERSION, fingerprint), (1, "f5817dd402644de9975a45495bfe73accea88617539f3b91ab50202ad4505624"))
+
     def test_schemas(self):
         self.assertEqual(DECISION_SCHEMA["properties"]["action"]["enum"], list(ACTIONS))
         self.assertEqual(DECISION_SCHEMA["required"], ["thought", "say", "action"])
@@ -696,6 +708,17 @@ class VisionModelTests(unittest.TestCase):
         model = ScriptedModel('{"say": "  The build failed.  "}')
         self.assertEqual(model.observe(SHOT), "The build failed.")
         self.assertEqual(model.calls, [(OBSERVE_PROMPT, OBSERVE_QUESTION, SHOT.image, OBSERVE_SCHEMA)])
+
+    def test_observe_can_have_its_own_chat(self):
+        class Watcher(ScriptedModel):
+            def _observe_chat(self, system, text, image, schema):
+                self.observed = (system, text, image, schema)
+                return '{"say": "Low battery."}'
+
+        model = Watcher()  # no _chat answers are written, so observe must not use _chat
+        self.assertEqual(model.observe(SHOT), "Low battery.")
+        self.assertEqual(model.observed, (OBSERVE_PROMPT, OBSERVE_QUESTION, SHOT.image, OBSERVE_SCHEMA))
+        self.assertEqual(model.calls, [])
 
     def test_observe_up_to_the_limit(self):
         self.assertEqual(ScriptedModel(json.dumps({"say": "a" * 400})).observe(SHOT), "a" * 400)
@@ -888,11 +911,9 @@ class OllamaVisionTests(unittest.TestCase):
                 vision, _ = self.make(respond)
                 self.assertEqual(vision.installed_models(), [])
 
-    @unittest.expectedFailure
     def test_installed_models_when_something_else_answers(self):
-        # BUG: installed_models catches only httpx.HTTPError, so a 200 answer that is not JSON
-        # (another program on Ollama's port) raises json.JSONDecodeError, which crashes
-        # `nexus live --check` instead of reporting that Ollama is not there.
+        # A 200 answer that is not JSON (another program on Ollama's port) means no models,
+        # not a crash of `nexus live --check`.
         vision, _ = self.make(lambda request: httpx.Response(200, text="<html>not Ollama</html>"))
         self.assertEqual(vision.installed_models(), [])
 
@@ -985,6 +1006,11 @@ class LlamaCppVisionTests(unittest.TestCase):
 
     def test_status_below_400_is_read(self):
         vision, _ = self.make(llama_answer(CLICK_JSON, status=399))
+        self.assertEqual(vision.decide("Open it", [], [], SHOT, "normalized"), Decision("click", x=10.0, y=20.0))
+
+    def test_first_choice_is_used(self):
+        choices = {"choices": [{"message": {"content": CLICK_JSON}}, {"message": {"content": '{"action": "done"}'}}]}
+        vision, _ = self.make(lambda request: httpx.Response(200, json=choices))
         self.assertEqual(vision.decide("Open it", [], [], SHOT, "normalized"), Decision("click", x=10.0, y=20.0))
 
     def test_answers_without_a_message(self):
