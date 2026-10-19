@@ -414,7 +414,8 @@ class PrivacyTests(unittest.TestCase):
         h.recorder.start("x")
         h.snap("s")
         h.recorder.on_press("a", "a")
-        self.assertEqual(h.steps(), [])
+        h.recorder.on_click(10, 10, "left", True)
+        self.assertEqual(h.recorder.stop().steps, [])  # stop() would write down typing still pending
 
     def test_a_click_that_lands_in_a_blocked_window_beside_is_not_recorded(self):
         h = Harness(title="Untitled - Notepad", under="Database.kdbx - KeePass")
